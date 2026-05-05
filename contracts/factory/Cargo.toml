@@ -2,9 +2,11 @@
 name = "factory"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
 
 [features]
 testutils = ["soroban-sdk/testutils", "amm/testutils", "token/testutils"]
