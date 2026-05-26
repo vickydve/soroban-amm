@@ -228,6 +228,8 @@ A single-entry-point contract for creating and discovering AMM pools. The factor
 | `get_pool(token_a, token_b) → Option<Address>` | Look up an existing pool (order-independent) |
 | `get_lp_token(pool) → Option<Address>` | Look up the LP token for a given pool address |
 | `all_pools() → Vec<Address>` | List every pool deployed by this factory |
+| `get_pool_count() → u64` | Return the total number of deployed pools |
+| `get_pools(offset, limit) → Vec<Address>` | Return a paginated page of pool addresses starting at offset |
 | `update_wasm_hashes(amm_wasm_hash, token_wasm_hash)` | Update the WASM hashes used for future pool deployments |
 | `upgrade(new_wasm_hash)` | Upgrade the factory contract code; requires admin auth |
 
@@ -251,7 +253,7 @@ Allows LP token holders to propose and vote on parameter changes to a pool on-ch
 |---|---|
 | `initialize(amm, lp_token, voting_period, quorum_bps, min_proposer_stake_bps)` | One-time governance setup |
 | `set_min_proposer_stake_bps(new_bps)` | Update the minimum LP stake required to create a proposal |
-| `propose(proposer, new_fee_bps) → u32` | Create a proposal to change the pool fee; returns proposal ID |
+| `propose(proposer, kind) → u32` | Create a new proposal with the specified ProposalKind; returns proposal ID |
 | `vote(voter, proposal_id, support)` | Cast a for/against vote weighted by the voter's LP balance |
 | `execute(proposal_id)` | Execute a passing proposal after the voting period ends |
 | `cancel_proposal(proposal_id, proposer)` | Cancel a pending proposal before voting ends |
@@ -560,9 +562,9 @@ A machine-readable JSON schema of all public contract functions, parameters, and
 
 | Event | Topics | Data Payload |
 |---|---|---|
-| `proposed` | `("proposed")` | `(proposal_id, proposer, new_fee_bps, vote_end)` |
+| `proposed` | `("proposed")` | `(proposal_id, proposer, ProposalKind, vote_end)` |
 | `voted` | `("voted")` | `(proposal_id, voter, support, voting_power)` |
-| `executed` | `("executed")` | `(proposal_id, new_fee_bps)` |
+| `executed` | `("executed")` | `(proposal_id, ProposalKind)` |
 | `cancelled` | `("cancelled")` | `(proposal_id, proposer)` |
 
 #### Concentrated Liquidity Event Payloads

@@ -306,6 +306,21 @@ impl AmmPool {
             .publish((symbol_short!("fee_upd"), admin.clone()), (new_fee_bps,));
     }
 
+    /// Update the flash loan fee post-deployment. Admin-only.
+    pub fn update_flash_loan_fee(env: Env, new_fee_bps: i128) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        Self::validate_fee_bps(new_fee_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::FlashLoanFeeBps, &new_fee_bps);
+        env.events().publish(
+            (Symbol::new(&env, "flash_fee_upd"), admin.clone()),
+            (new_fee_bps,),
+        );
+    }
+
+
     /// Nominate a new admin. The nominee must call `accept_admin` to complete the transfer.
     ///
     /// # Panics

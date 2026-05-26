@@ -89,11 +89,30 @@ pub struct GovernanceParams {
 }
 
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpdateProtocolFeeParams {
+    pub new_bps: i128,
+    pub new_recipient: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProposalKind {
+    UpdateFee(i128),
+    UpdateProtocolFee(UpdateProtocolFeeParams),
+    UpdateFlashLoanFee(i128),
+    TransferAdmin(Address),
+    PausePool,
+    UnpausePool,
+}
+
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Proposal {
     pub id: u32,
     pub proposer: Address,
-    pub new_fee_bps: i128,
+    pub kind: ProposalKind,
     /// LP total supply snapshot at proposal creation.
     pub snapshot_total_supply: i128,
     /// Timestamp when voting opens (== creation timestamp).
@@ -125,6 +144,11 @@ pub trait LpTokenInterface {
 #[soroban_sdk::contractclient(name = "AmmPoolClient")]
 pub trait AmmPoolInterface {
     fn update_fee(env: Env, new_fee_bps: i128);
+    fn update_flash_loan_fee(env: Env, new_fee_bps: i128);
+    fn set_protocol_fee(env: Env, admin: Address, recipient: Address, protocol_fee_bps: i128);
+    fn pause(env: Env);
+    fn unpause(env: Env);
+    fn propose_admin(env: Env, current_admin: Address, new_admin: Address);
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -204,10 +228,24 @@ impl Governance {
     ///
     /// The proposer must hold at least the configured minimum LP stake.
     /// Returns the new `proposal_id`.
-    pub fn propose(env: Env, proposer: Address, new_fee_bps: i128) -> u32 {
+    pub fn propose(env: Env, proposer: Address, kind: ProposalKind) -> u32 {
         proposer.require_auth();
 
-        assert!((0..=MAX_BPS).contains(&new_fee_bps), "invalid fee");
+        match &kind {
+            ProposalKind::UpdateFee(new_fee_bps) => {
+                assert!((0..=MAX_BPS).contains(new_fee_bps), "invalid fee");
+            }
+            ProposalKind::UpdateProtocolFee(params) => {
+                assert!((0..=MAX_BPS).contains(&params.new_bps), "invalid protocol fee bps");
+            }
+            ProposalKind::UpdateFlashLoanFee(new_bps) => {
+                assert!((0..=MAX_BPS).contains(new_bps), "invalid flash loan fee bps");
+            }
+            ProposalKind::TransferAdmin(_new_admin) => {}
+            ProposalKind::PausePool => {}
+            ProposalKind::UnpausePool => {}
+        }
+
 
         let lp_token: Address = env.storage().instance().get(&DataKey::LpToken).unwrap();
         let lp_client = LpTokenClient::new(&env, &lp_token);
@@ -247,7 +285,7 @@ impl Governance {
         let proposal = Proposal {
             id,
             proposer: proposer.clone(),
-            new_fee_bps,
+            kind: kind.clone(),
             snapshot_total_supply: total_supply,
             vote_start: now,
             vote_end,
@@ -268,7 +306,7 @@ impl Governance {
 
         env.events().publish(
             (Symbol::new(&env, "proposed"),),
-            (id, proposer, new_fee_bps, vote_end),
+            (id, proposer, kind, vote_end),
         );
 
         id
@@ -368,7 +406,30 @@ impl Governance {
         );
 
         let amm_pool: Address = env.storage().instance().get(&DataKey::AmmPool).unwrap();
-        AmmPoolClient::new(&env, &amm_pool).update_fee(&proposal.new_fee_bps);
+        let amm_client = AmmPoolClient::new(&env, &amm_pool);
+        match &proposal.kind {
+            ProposalKind::UpdateFee(new_fee_bps) => {
+                amm_client.update_fee(new_fee_bps);
+            }
+            ProposalKind::UpdateProtocolFee(params) => {
+                let self_addr = env.current_contract_address();
+                amm_client.set_protocol_fee(&self_addr, &params.new_recipient, &params.new_bps);
+            }
+            ProposalKind::UpdateFlashLoanFee(new_bps) => {
+                amm_client.update_flash_loan_fee(new_bps);
+            }
+            ProposalKind::TransferAdmin(new_admin) => {
+                let self_addr = env.current_contract_address();
+                amm_client.propose_admin(&self_addr, new_admin);
+            }
+            ProposalKind::PausePool => {
+                amm_client.pause();
+            }
+            ProposalKind::UnpausePool => {
+                amm_client.unpause();
+            }
+        }
+
 
         proposal.executed = true;
         env.storage().persistent().set(&proposal_key, &proposal);
@@ -376,7 +437,7 @@ impl Governance {
 
         env.events().publish(
             (Symbol::new(&env, "executed"),),
-            (proposal_id, proposal.new_fee_bps),
+            (proposal_id, proposal.kind.clone()),
         );
     }
 
@@ -537,6 +598,7 @@ mod tests {
         env: Env,
         gov_addr: Address,
         lp_addr: Address,
+        amm_addr: Address,
     }
 
     fn setup_suite(initial_fee_bps: i128) -> Suite {
@@ -561,10 +623,13 @@ mod tests {
         let ta_addr = ta.address();
         let tb_addr = tb.address();
 
+        // Deploy governance.
+        let gov_addr = env.register_contract(None, Governance);
+
         // Deploy AMM.
         let amm_addr = env.register_contract(None, AmmPool);
         amm::AmmPoolClient::new(&env, &amm_addr).initialize(
-            &admin,
+            &gov_addr, // The governance contract is the pool's admin
             &ta_addr,
             &tb_addr,
             &lp_addr,
@@ -573,8 +638,7 @@ mod tests {
             &0_i128,
         );
 
-        // Deploy governance with configurable parameters matching original defaults.
-        let gov_addr = env.register_contract(None, Governance);
+        // Initialize governance.
         GovernanceClient::new(&env, &gov_addr).initialize(
             &admin,
             &amm_addr,
@@ -590,6 +654,7 @@ mod tests {
             env,
             gov_addr,
             lp_addr,
+            amm_addr,
         }
     }
 
@@ -611,7 +676,7 @@ mod tests {
         mint_lp(&s, &lp2, 400);
 
         // Propose new fee of 50 bps.
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         assert_eq!(pid, 0);
 
         // Both vote for.
@@ -640,7 +705,7 @@ mod tests {
         mint_lp(&s, &lp1, 20);
         mint_lp(&s, &lp2, 980);
 
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         // Only lp1 votes (20 out of 1000 total = 2% < 10% quorum).
         gov.vote(&lp1, &pid, &true);
 
@@ -663,7 +728,7 @@ mod tests {
         mint_lp(&s, &lp1, 600);
         mint_lp(&s, &lp2, 400);
 
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         gov.vote(&lp1, &pid, &true);
         gov.vote(&lp2, &pid, &true);
 
@@ -685,7 +750,7 @@ mod tests {
         mint_lp(&s, &lp1, 500);
         mint_lp(&s, &Address::generate(&s.env), 500);
 
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         gov.vote(&lp1, &pid, &true);
 
         let result = gov.try_vote(&lp1, &pid, &false);
@@ -701,7 +766,7 @@ mod tests {
         mint_lp(&s, &lp1, 500);
         mint_lp(&s, &Address::generate(&s.env), 500);
 
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         let proposal = gov.get_proposal(&pid);
         s.env.ledger().set_timestamp(proposal.vote_end + 1);
 
@@ -719,7 +784,7 @@ mod tests {
         mint_lp(&s, &lp1, 600);
         mint_lp(&s, &lp2, 400);
 
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         gov.vote(&lp1, &pid, &true);
         gov.vote(&lp2, &pid, &true);
 
@@ -742,7 +807,7 @@ mod tests {
         mint_lp(&s, &lp1, 600);
         mint_lp(&s, &lp2, 400);
 
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         assert_eq!(gov.proposal_status(&pid), ProposalStatus::Active);
 
         gov.vote(&lp1, &pid, &true);
@@ -762,7 +827,7 @@ mod tests {
         // Give someone else tokens so total_supply > 0.
         mint_lp(&s, &Address::generate(&s.env), 1000);
 
-        let result = gov.try_propose(&nobody, &50_i128);
+        let result = gov.try_propose(&nobody, &ProposalKind::UpdateFee(50));
         assert!(result.is_err());
     }
 
@@ -774,7 +839,7 @@ mod tests {
         let lp1 = Address::generate(&s.env);
         mint_lp(&s, &lp1, 1000);
 
-        let result = gov.try_propose(&lp1, &10_001_i128);
+        let result = gov.try_propose(&lp1, &ProposalKind::UpdateFee(10_001));
         assert!(result.is_err());
     }
 
@@ -790,8 +855,8 @@ mod tests {
         mint_lp(&s, &exact, 10);
         mint_lp(&s, &whale, 981);
 
-        assert!(gov.try_propose(&low, &40_i128).is_err());
-        let pid = gov.propose(&exact, &40_i128);
+        assert!(gov.try_propose(&low, &ProposalKind::UpdateFee(40)).is_err());
+        let pid = gov.propose(&exact, &ProposalKind::UpdateFee(40));
         assert_eq!(pid, 0);
     }
 
@@ -807,7 +872,7 @@ mod tests {
         mint_lp(&s, &lp1, 600);
         mint_lp(&s, &lp2, 400);
 
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         gov.vote(&lp1, &pid, &true);
         assert_eq!(lp_client.locked_balance(&lp1), 600);
 
@@ -840,10 +905,10 @@ mod tests {
         mint_lp(&s, &lp1, 600);
         mint_lp(&s, &lp2, 400);
 
-        let pid = gov.propose(&lp1, &50_i128);
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
         let proposal = gov.get_proposal(&pid);
 
-        // `proposed` event: (id, proposer, new_fee_bps, vote_end)
+        // `proposed` event: (id, proposer, kind, vote_end)
         let events = s.env.events().all();
         let proposed_evt = events
             .iter()
@@ -851,10 +916,10 @@ mod tests {
                 e.0 == gov.address && e.1 == (Symbol::new(&s.env, "proposed"),).into_val(&s.env)
             })
             .expect("proposed event not found");
-        let proposed_data: (u32, Address, i128, u64) = proposed_evt.2.into_val(&s.env);
+        let proposed_data: (u32, Address, ProposalKind, u64) = proposed_evt.2.into_val(&s.env);
         assert_eq!(
             proposed_data,
-            (pid, lp1.clone(), 50_i128, proposal.vote_end)
+            (pid, lp1.clone(), ProposalKind::UpdateFee(50), proposal.vote_end)
         );
 
         gov.vote(&lp1, &pid, &true);
@@ -873,7 +938,7 @@ mod tests {
         s.env.ledger().set_timestamp(proposal.execute_after + 1);
         gov.execute(&pid);
 
-        // `executed` event: (proposal_id, new_fee_bps)
+        // `executed` event: (proposal_id, kind)
         let events = s.env.events().all();
         let executed_evt = events
             .iter()
@@ -881,7 +946,58 @@ mod tests {
                 e.0 == gov.address && e.1 == (Symbol::new(&s.env, "executed"),).into_val(&s.env)
             })
             .expect("executed event not found");
-        let executed_data: (u32, i128) = executed_evt.2.into_val(&s.env);
-        assert_eq!(executed_data, (pid, 50_i128));
+        let executed_data: (u32, ProposalKind) = executed_evt.2.into_val(&s.env);
+        assert_eq!(executed_data, (pid, ProposalKind::UpdateFee(50)));
+    }
+
+    #[test]
+    fn test_governance_multiple_proposal_kinds() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+        let amm = amm::AmmPoolClient::new(&s.env, &s.amm_addr);
+
+        let lp1 = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 1000);
+
+        // --- 1. Test PausePool proposal ---
+        let pid1 = gov.propose(&lp1, &ProposalKind::PausePool);
+        gov.vote(&lp1, &pid1, &true);
+        let prop1 = gov.get_proposal(&pid1);
+        s.env.ledger().set_timestamp(prop1.execute_after + 1);
+        gov.execute(&pid1);
+        assert!(amm.is_paused());
+        gov.unlock_vote(&lp1, &pid1);
+
+        // --- 2. Test UnpausePool proposal ---
+        let pid2 = gov.propose(&lp1, &ProposalKind::UnpausePool);
+        gov.vote(&lp1, &pid2, &true);
+        let prop2 = gov.get_proposal(&pid2);
+        s.env.ledger().set_timestamp(prop2.execute_after + 1);
+        gov.execute(&pid2);
+        assert!(!amm.is_paused());
+        gov.unlock_vote(&lp1, &pid2);
+
+        // --- 3. Test UpdateFlashLoanFee proposal ---
+        let pid3 = gov.propose(&lp1, &ProposalKind::UpdateFlashLoanFee(45));
+        gov.vote(&lp1, &pid3, &true);
+        let prop3 = gov.get_proposal(&pid3);
+        s.env.ledger().set_timestamp(prop3.execute_after + 1);
+        gov.execute(&pid3);
+        let info = amm.get_info();
+        assert_eq!(info.flash_loan_fee_bps, 45);
+        gov.unlock_vote(&lp1, &pid3);
+
+        // --- 4. Test UpdateProtocolFee proposal ---
+        let recipient = Address::generate(&s.env);
+        let pid4 = gov.propose(&lp1, &ProposalKind::UpdateProtocolFee(UpdateProtocolFeeParams { new_bps: 10, new_recipient: recipient.clone() }));
+        gov.vote(&lp1, &pid4, &true);
+        let prop4 = gov.get_proposal(&pid4);
+        s.env.ledger().set_timestamp(prop4.execute_after + 1);
+        gov.execute(&pid4);
+        let (fee_rec, bps) = amm.get_protocol_fee();
+        assert_eq!(fee_rec, Some(recipient));
+        assert_eq!(bps, 10);
+        gov.unlock_vote(&lp1, &pid4);
     }
 }
+

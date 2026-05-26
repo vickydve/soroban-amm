@@ -266,6 +266,34 @@ impl Factory {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Return the total number of pools deployed by this factory.
+    pub fn get_pool_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PoolCount)
+            .unwrap_or(0)
+    }
+
+    /// Return up to `limit` pool addresses starting at `offset`.
+    pub fn get_pools(env: Env, offset: u32, limit: u32) -> Vec<Address> {
+        let all: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllPools)
+            .unwrap_or_else(|| Vec::new(&env));
+        let len = all.len();
+        let start = offset.min(len);
+        let end = (start + limit).min(len);
+
+        let mut page = Vec::new(&env);
+        for i in start..end {
+            if let Some(pool) = all.get(i) {
+                page.push_back(pool);
+            }
+        }
+        page
+    }
+
     // ── Internals ─────────────────────────────────────────────────────────────
 
     /// Build a deterministic 32-byte salt from a u64 index.
@@ -549,5 +577,62 @@ mod tests {
 
         // Partial update — only amm_wasm_hash.
         factory.update_wasm_hashes(&Some(amm_hash.clone()), &None);
+    }
+
+    #[test]
+    fn test_pagination() {
+        let env = Env::default();
+        env.budget().reset_unlimited();
+        env.mock_all_auths();
+
+        let amm_hash = env.deployer().upload_contract_wasm(amm::WASM);
+        let token_hash = env.deployer().upload_contract_wasm(token::WASM);
+
+        let admin = Address::generate(&env);
+        let factory_addr = env.register_contract(None, Factory);
+        let factory = FactoryClient::new(&env, &factory_addr);
+        factory.initialize(&admin, &amm_hash, &token_hash);
+
+        // Initial pool count should be 0.
+        assert_eq!(factory.get_pool_count(), 0);
+
+        let ta = Address::generate(&env);
+        let tb = Address::generate(&env);
+        let tc = Address::generate(&env);
+        let td = Address::generate(&env);
+
+        let pool1 = factory.create_pool(&ta, &tb, &30_i128, &None, &None);
+        assert_eq!(factory.get_pool_count(), 1);
+
+        let pool2 = factory.create_pool(&ta, &tc, &30_i128, &None, &None);
+        assert_eq!(factory.get_pool_count(), 2);
+
+        let pool3 = factory.create_pool(&ta, &td, &30_i128, &None, &None);
+        assert_eq!(factory.get_pool_count(), 3);
+
+        // Page 1: first two pools.
+        let page1 = factory.get_pools(&0u32, &2u32);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1.get(0).unwrap(), pool1);
+        assert_eq!(page1.get(1).unwrap(), pool2);
+
+        // Page 2: starting at index 1, limit 1.
+        let page2 = factory.get_pools(&1u32, &1u32);
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2.get(0).unwrap(), pool2);
+
+        // Page 3: limit larger than remaining.
+        let page3 = factory.get_pools(&1u32, &5u32);
+        assert_eq!(page3.len(), 2);
+        assert_eq!(page3.get(0).unwrap(), pool2);
+        assert_eq!(page3.get(1).unwrap(), pool3);
+
+        // Page 4: offset past end.
+        let page4 = factory.get_pools(&5u32, &2u32);
+        assert_eq!(page4.len(), 0);
+
+        // Limit = 0.
+        let page5 = factory.get_pools(&1u32, &0u32);
+        assert_eq!(page5.len(), 0);
     }
 }
