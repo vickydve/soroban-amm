@@ -6,9 +6,7 @@
 
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, Symbol,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
 
 // SEP-41 token interface
 use soroban_sdk::token::Client as SepTokenClient;
@@ -111,16 +109,11 @@ impl Staking {
         assert!(admin == stored_admin, "not admin");
         assert!(amount > 0, "amount must be positive");
 
-        let reward_token: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::RewardToken)
-            .unwrap();
+        let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).unwrap();
         let pool_addr = env.current_contract_address();
 
         // Transfer reward tokens from admin to pool
-        SepTokenClient::new(&env, &reward_token)
-            .transfer_from(&admin, &admin, &pool_addr, &amount);
+        SepTokenClient::new(&env, &reward_token).transfer_from(&admin, &admin, &pool_addr, &amount);
 
         // Update pool balance
         let current_balance: i128 = env
@@ -157,16 +150,13 @@ impl Staking {
             .persistent()
             .get(&DataKey::StakerAmount(staker.clone()))
             .unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerAmount(staker.clone()), &(current_staked + amount));
+        env.storage().persistent().set(
+            &DataKey::StakerAmount(staker.clone()),
+            &(current_staked + amount),
+        );
 
         // Update total staked
-        let total_staked: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalStaked)
-            .unwrap();
+        let total_staked: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap();
         env.storage()
             .instance()
             .set(&DataKey::TotalStaked, &(total_staked + amount));
@@ -204,11 +194,7 @@ impl Staking {
         let pending = Self::pending_rewards(env.clone(), staker.clone());
         assert!(pending > 0, "no pending rewards");
 
-        let reward_token: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::RewardToken)
-            .unwrap();
+        let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).unwrap();
         let pool_addr = env.current_contract_address();
 
         // Update rewards debt to reflect claimed rewards
@@ -275,16 +261,13 @@ impl Staking {
         SepTokenClient::new(&env, &lp_token).transfer(&pool_addr, &staker, &amount);
 
         // Update staked amount
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerAmount(staker.clone()), &(staked_amount - amount));
+        env.storage().persistent().set(
+            &DataKey::StakerAmount(staker.clone()),
+            &(staked_amount - amount),
+        );
 
         // Update total staked
-        let total_staked: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalStaked)
-            .unwrap();
+        let total_staked: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap();
         env.storage()
             .instance()
             .set(&DataKey::TotalStaked, &(total_staked - amount));
@@ -349,11 +332,7 @@ impl Staking {
     pub fn get_pool_info(env: Env) -> PoolInfo {
         PoolInfo {
             lp_token: env.storage().instance().get(&DataKey::LpToken).unwrap(),
-            reward_token: env
-                .storage()
-                .instance()
-                .get(&DataKey::RewardToken)
-                .unwrap(),
+            reward_token: env.storage().instance().get(&DataKey::RewardToken).unwrap(),
             admin: env.storage().instance().get(&DataKey::Admin).unwrap(),
             total_staked: env
                 .storage()
@@ -452,11 +431,7 @@ mod tests {
 
         let staking = StakingClient::new(&env, &staking_addr);
 
-        staking.initialize(
-            &lp_token.address,
-            &reward_token.address,
-            &admin,
-        );
+        staking.initialize(&lp_token.address, &reward_token.address, &admin);
 
         // Mint LP tokens to staker
         lp_sac.mint(&staker, &1000_i128);
@@ -498,11 +473,7 @@ mod tests {
 
         let staking = StakingClient::new(&env, &staking_addr);
 
-        staking.initialize(
-            &lp_token.address,
-            &reward_token.address,
-            &admin,
-        );
+        staking.initialize(&lp_token.address, &reward_token.address, &admin);
 
         lp_sac.mint(&staker, &1000_i128);
         reward_sac.mint(&admin, &500_i128);

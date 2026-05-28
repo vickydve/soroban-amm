@@ -21,7 +21,6 @@ pub const WASM: &[u8] = include_bytes!(concat!(
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
 
-
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MAX_BPS: i128 = 10_000;
@@ -148,7 +147,6 @@ pub struct Proposal {
     pub executed: bool,
     pub cancelled: bool,
 }
-
 
 // ── LP token client ───────────────────────────────────────────────────────────
 
@@ -581,7 +579,9 @@ impl Governance {
     /// - `from` – Address removing their delegation; must authorize this call.
     pub fn undelegate(env: Env, from: Address) {
         from.require_auth();
-        env.storage().instance().remove(&DataKey::Delegate(from.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::Delegate(from.clone()));
 
         env.events()
             .publish((Symbol::new(&env, "undelegated"),), (from,));
@@ -605,15 +605,15 @@ impl Governance {
     fn get_voting_power(env: &Env, voter: &Address) -> i128 {
         let lp_token: Address = env.storage().instance().get(&DataKey::LpToken).unwrap();
         let lp_client = LpTokenClient::new(env, &lp_token);
-        
+
         // Start with voter's own balance
         let total_power = lp_client.balance(voter);
-        
+
         // Note: Due to Soroban's storage model, we cannot efficiently iterate over all delegators.
         // In a production implementation, you'd need to maintain a reverse delegation index
         // or use an alternative design. For now, we return the voter's own balance.
         // The delegation voting logic should be implemented off-chain or with a delegatee registry.
-        
+
         total_power
     }
 
@@ -1266,4 +1266,3 @@ mod prop_tests {
         }
     }
 }
-

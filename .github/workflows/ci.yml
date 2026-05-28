@@ -26,6 +26,24 @@ jobs:
       - name: Build WASM artifacts
         run: cargo build --release --target wasm32v1-none
 
+      - name: Check WASM sizes
+        run: |
+          LIMIT=131072 # 128 KB
+          for wasm in target/wasm32v1-none/release/{amm,token,factory,governance,twap_consumer}.wasm; do
+            if [ -f "$wasm" ]; then
+              size=$(stat -c%s "$wasm" 2>/dev/null || stat -f%z "$wasm")
+              size_kb=$(echo "scale=2; $size / 1024" | bc 2>/dev/null || expr $size / 1024)
+              echo "$wasm: ${size_kb} KB"
+              if [ $size -gt $LIMIT ]; then
+                echo "Error: $wasm exceeds $LIMIT bytes limit"
+                exit 1
+              fi
+            else
+              echo "Error: $wasm not found"
+              exit 1
+            fi
+          done
+
       - name: Run all tests
         run: cargo test --workspace
 

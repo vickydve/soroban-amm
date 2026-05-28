@@ -1,10 +1,17 @@
-.PHONY: build test fmt lint check deploy e2e clean
+.PHONY: build test fmt lint check deploy e2e clean optimize
 
 # Default target
 all: build
 
 build:
 	cargo build --release --target wasm32v1-none
+
+optimize: build
+	stellar contract optimize --wasm target/wasm32v1-none/release/amm.wasm
+	stellar contract optimize --wasm target/wasm32v1-none/release/token.wasm
+	stellar contract optimize --wasm target/wasm32v1-none/release/factory.wasm
+	stellar contract optimize --wasm target/wasm32v1-none/release/governance.wasm
+	stellar contract optimize --wasm target/wasm32v1-none/release/twap_consumer.wasm
 
 test: build
 	cargo test

@@ -495,6 +495,12 @@ Or via the Makefile alias:
 make build
 ```
 
+To optimize the compiled WASM binaries for size (typically reducing size by 20-40% using `wasm-opt` through Stellar CLI):
+
+```sh
+make optimize
+```
+
 Output files:
 
 ```
