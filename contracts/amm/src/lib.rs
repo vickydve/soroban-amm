@@ -82,6 +82,7 @@ pub enum DataKey {
     TotalShares,
     PriceCumulativeA,
     PriceCumulativeB,
+    LiquidityCumulative,
     LastTimestamp,
     Shares(Address),
     // Emergency withdrawal storage
@@ -290,6 +291,9 @@ impl AmmPool {
         env.storage()
             .instance()
             .set(&DataKey::PriceCumulativeB, &0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::LiquidityCumulative, &0_i128);
         env.storage()
             .instance()
             .set(&DataKey::LastTimestamp, &env.ledger().timestamp());
@@ -812,6 +816,39 @@ impl AmmPool {
         }
     }
 
+    /// Update the TWAL liquidity accumulator (sqrt(reserve_a * reserve_b) * elapsed).
+    fn checkpoint_twal(env: &Env) {
+        let now = env.ledger().timestamp();
+        let last: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LastTimestamp)
+            .unwrap_or(now);
+        if now > last {
+            let reserve_a = Self::get_reserve_a(env.clone());
+            let reserve_b = Self::get_reserve_b(env.clone());
+            if reserve_a > 0 && reserve_b > 0 {
+                let elapsed = (now - last) as i128;
+                let liquidity = Self::sqrt(reserve_a * reserve_b);
+                let mut cum: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::LiquidityCumulative)
+                    .unwrap_or(0);
+                cum = cum.wrapping_add(liquidity * elapsed);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::LiquidityCumulative, &cum);
+            }
+        }
+    }
+
+    /// Checkpoint both TWAP price and TWAL liquidity accumulators.
+    fn checkpoint_oracles(env: &Env) {
+        Self::checkpoint_twap(env);
+        Self::checkpoint_twal(env);
+    }
+
     // ── Liquidity ─────────────────────────────────────────────────────────────
 
     /// Deposit tokens into the pool and receive LP shares in return.
@@ -862,8 +899,8 @@ impl AmmPool {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
         let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
@@ -879,10 +916,7 @@ impl AmmPool {
             Self::sqrt(amount_a * amount_b)
         } else {
             // Proportional shares — use the lesser of the two ratios.
-
-        // Record snapshot after successful liquidity addition
-        Self::record_snapshot(env.clone(), provider);
-
+            let shares_a = amount_a * total_shares / reserve_a;
             let shares_b = amount_b * total_shares / reserve_b;
             shares_a.min(shares_b)
         };
@@ -972,8 +1006,8 @@ impl AmmPool {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         let owned = Self::shares_of(env.clone(), provider.clone());
         if owned < shares {
@@ -1074,8 +1108,8 @@ impl AmmPool {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         let owned = Self::shares_of(env.clone(), provider.clone());
         if owned < shares {
@@ -1287,8 +1321,8 @@ impl AmmPool {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         // Circuit breaker: check intra-block price deviation BEFORE the swap
         // changes the reserves so the baseline is the pre-trade price.
@@ -1441,8 +1475,8 @@ impl AmmPool {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         // Circuit breaker check before state mutation.
         Self::check_circuit_breaker(&env)?;
@@ -1611,8 +1645,8 @@ impl AmmPool {
         // back into swap / add_liquidity / remove_liquidity / flash_loan.
         Self::enter_lock(&env)?;
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         // Circuit breaker check before borrowing funds.
         Self::check_circuit_breaker(&env)?;
@@ -1897,6 +1931,21 @@ impl AmmPool {
     }
 
     // ── Internals ─────────────────────────────────────────────────────────────
+
+    /// Returns the cumulative liquidity accumulator and the timestamp of the last update.
+    pub fn get_liquidity_cumulative(env: Env) -> (i128, u64) {
+        let liquidity_cum = env
+            .storage()
+            .instance()
+            .get(&DataKey::LiquidityCumulative)
+            .unwrap_or(0);
+        let last_timestamp = env
+            .storage()
+            .instance()
+            .get(&DataKey::LastTimestamp)
+            .unwrap_or(0);
+        (liquidity_cum, last_timestamp)
+    }
 
     /// Returns the cumulative price accumulators and the timestamp of the last update.
     pub fn get_price_cumulative(env: Env) -> (i128, i128, u64) {
@@ -2912,6 +2961,43 @@ pub(crate) mod tests {
         assert_eq!(final_ts, new_ts + 5);
         assert_eq!(final_cum_a, new_cum_a + expected_price_a * 5);
         assert_eq!(final_cum_b, new_cum_b + expected_price_b * 5);
+    }
+
+    #[test]
+    fn test_twal_oracle() {
+        let ts = setup_pool(30);
+        let env = &ts.env;
+        let amm = AmmPoolClient::new(env, &ts.amm_addr);
+        let ta_sac = StellarAssetClient::new(env, &ts.ta_addr);
+        let tb_sac = StellarAssetClient::new(env, &ts.tb_addr);
+
+        let provider = Address::generate(env);
+        ta_sac.mint(&provider, &1_000_000_i128);
+        tb_sac.mint(&provider, &1_000_000_i128);
+        amm.add_liquidity(
+            &provider,
+            &1_000_000_i128,
+            &1_000_000_i128,
+            &0_i128,
+            &0_i128,
+            &0_i128,
+            &u64::MAX,
+        )
+        .unwrap();
+
+        let (cum, last_ts) = amm.get_liquidity_cumulative();
+        assert_eq!(cum, 0);
+        assert!(last_ts > 0);
+
+        env.ledger().set_timestamp(last_ts + 10);
+        let trader = Address::generate(env);
+        ta_sac.mint(&trader, &10_000_i128);
+        amm.swap(&trader, &ts.ta_addr, &10_000_i128, &0_i128, &u64::MAX);
+
+        let (new_cum, new_ts) = amm.get_liquidity_cumulative();
+        assert_eq!(new_ts, last_ts + 10);
+        // sqrt(1e6 * 1e6) = 1e6, * 10s = 10_000_000
+        assert_eq!(new_cum, 10_000_000);
     }
 
     // ── Edge cases: zero-reserve guard ───────────────────────────────────────────
