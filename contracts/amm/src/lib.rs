@@ -74,15 +74,7 @@ pub enum DataKey {
     PriceCumulativeB,
     LastTimestamp,
     Shares(Address),
-    FeeBps,         // swap fee in basis points, e.g. 30 = 0.30 %
-    Admin,          // Address — contract administrator; authorises set_protocol_fee
-    PendingAdmin,   // Option<Address> � nominee waiting to accept admin role
-    FeeRecipient,   // Address — receives accrued protocol fees
-    ProtocolFeeBps, // i128 — protocol fee bps (subset of FeeBps going to protocol)
-    AccruedFeeA,    // i128 — protocol fees accrued in TokenA
-    AccruedFeeB,    // i128 — protocol fees accrued in TokenB
-    Paused,
-    FlashLoanFeeBps,
+
 }
 
 // ── Pool info returned by `get_info` ─────────────────────────────────────────
@@ -490,6 +482,8 @@ impl AmmPool {
         provider: Address,
         amount_a: i128,
         amount_b: i128,
+        min_amount_a: i128,
+        min_amount_b: i128,
         min_shares: i128,
         deadline: u64,
     ) -> Result<i128, AmmError> {
@@ -521,7 +515,10 @@ impl AmmPool {
             Self::sqrt(amount_a * amount_b)
         } else {
             // Proportional shares — use the lesser of the two ratios.
-            let shares_a = amount_a * total_shares / reserve_a;
+
+        // Record snapshot after successful liquidity addition
+        Self::record_snapshot(env.clone(), provider);
+
             let shares_b = amount_b * total_shares / reserve_b;
             shares_a.min(shares_b)
         };
