@@ -19,13 +19,17 @@ pub const WASM: &[u8] = include_bytes!(concat!(
     "/../../target/wasm32v1-none/release/governance.wasm"
 ));
 
-use soroban_sdk::{contract, contractimpl, contracterror, contracttype, Address, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, contracterror, contracttype, Address, Env, Symbol, Vec};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MAX_BPS: i128 = 10_000;
 const MIN_PERSISTENT_TTL: u32 = 172_800; // ~10 days at 5s/ledger
 const PERSISTENT_TTL_BUMP_TO: u32 = 259_200; // ~15 days at 5s/ledger
+/// Multisig may veto a passed proposal within this window after voting ends.
+const VETO_WINDOW_SECS: u64 = 24 * 60 * 60;
+/// Maximum delegation chain depth (prevents unbounded recursion).
+const MAX_DELEGATION_DEPTH: u32 = 8;
 
 // ── Typed errors ─────────────────────────────────────────────────────────────
 
@@ -57,6 +61,13 @@ pub enum GovernanceError {
     ProposalNotConcluded    = 23,
     CannotDelegateToSelf    = 24,
     Unauthorized            = 25,
+    HasDelegated            = 26,
+    DelegationCycle         = 27,
+    ProposalVetoed          = 28,
+    VetoWindowExpired       = 29,
+    NotVetoMultisig         = 30,
+    InsufficientSnapshotBal = 31,
+    VetoMultisigNotSet      = 32,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -87,6 +98,16 @@ pub enum DataKey {
     LockedVote(u32, Address),
     /// Delegation mapping: delegator -> delegatee address.
     Delegate(Address),
+    /// Protocol multisig authorized to veto passed proposals.
+    VetoMultisig,
+    /// Number of addresses delegating to a given delegatee.
+    DelegatorCount(Address),
+    /// Delegator at index for a delegatee.
+    Delegator(Address, u32),
+    /// Index of a delegator in their delegatee's list (for removal).
+    DelegatorSlot(Address),
+    /// Audit record for a vetoed proposal.
+    VetoAudit(u32),
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -108,6 +129,10 @@ pub enum ProposalStatus {
     Expired,
     /// Proposal was cancelled by the original proposer.
     Cancelled,
+    /// Multisig vetoed; community discussion period is active.
+    InDiscussion,
+    /// Multisig vetoed; discussion period ended — cannot execute.
+    Vetoed,
 }
 
 /// Choice for a vote.
@@ -137,6 +162,17 @@ pub struct GovernanceParams {
     pub timelock_secs: u64,
     pub quorum_bps: i128,
     pub min_proposer_stake_bps: i128,
+    pub veto_multisig: Option<Address>,
+}
+
+/// On-chain audit trail for a governance veto.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VetoAudit {
+    pub proposal_id: u32,
+    pub vetoed_by: Address,
+    pub vetoed_at: u64,
+    pub discussion_end: u64,
 }
 
 #[contracttype]
@@ -165,6 +201,8 @@ pub struct Proposal {
     pub kind: ProposalKind,
     /// LP total supply snapshot at proposal creation.
     pub snapshot_total_supply: i128,
+    /// Ledger sequence when LP balances were snapshotted for voting.
+    pub snapshot_ledger: u32,
     /// Timestamp when voting opens (== creation timestamp).
     pub vote_start: u64,
     /// Timestamp when voting closes.
@@ -178,6 +216,10 @@ pub struct Proposal {
     pub votes_abstain: i128,
     pub executed: bool,
     pub cancelled: bool,
+    pub vetoed: bool,
+    pub vetoed_by: Option<Address>,
+    pub vetoed_at: Option<u64>,
+    pub discussion_end: Option<u64>,
 }
 
 // ── LP token client ───────────────────────────────────────────────────────────
@@ -185,6 +227,7 @@ pub struct Proposal {
 #[soroban_sdk::contractclient(name = "LpTokenClient")]
 pub trait LpTokenInterface {
     fn balance(env: Env, id: Address) -> i128;
+    fn balance_at(env: Env, id: Address, ledger: u32) -> i128;
     fn total_supply(env: Env) -> i128;
     fn lock(env: Env, holder: Address, amount: i128);
     fn unlock(env: Env, holder: Address, amount: i128);
@@ -351,11 +394,14 @@ impl Governance {
             .get(&DataKey::ProposalCount)
             .unwrap();
 
+        let snapshot_ledger = env.ledger().sequence();
+
         let proposal = Proposal {
             id,
             proposer: proposer.clone(),
             kind: kind.clone(),
             snapshot_total_supply: total_supply,
+            snapshot_ledger,
             vote_start: now,
             vote_end,
             execute_after,
@@ -365,6 +411,10 @@ impl Governance {
             votes_abstain: 0,
             executed: false,
             cancelled: false,
+            vetoed: false,
+            vetoed_by: None,
+            vetoed_at: None,
+            discussion_end: None,
         };
 
         let proposal_key = DataKey::Proposal(id);
@@ -376,7 +426,7 @@ impl Governance {
 
         env.events().publish(
             (Symbol::new(&env, "proposed"),),
-            (id, proposer, kind, vote_end),
+            (id, proposer, kind, vote_end, snapshot_ledger),
         );
 
         Ok(id)
@@ -384,10 +434,14 @@ impl Governance {
 
     /// Cast a vote on an active proposal.
     ///
-    /// Voting power = voter's current LP balance, which is then locked until
-    /// the proposal concludes. Each address may only vote once per proposal.
+    /// Voting power uses LP balances snapshotted at proposal creation (`snapshot_ledger`).
+    /// Delegators cannot vote directly; the terminal delegatee votes with aggregated power.
     pub fn vote(env: Env, voter: Address, proposal_id: u32, choice: Vote) -> Result<(), GovernanceError> {
         voter.require_auth();
+
+        if Self::get_delegate(env.clone(), voter.clone()).is_some() {
+            return Err(GovernanceError::HasDelegated);
+        }
 
         let proposal_key = DataKey::Proposal(proposal_id);
         let mut proposal: Proposal = env
@@ -410,6 +464,9 @@ impl Governance {
         if proposal.cancelled {
             return Err(GovernanceError::ProposalCancelled);
         }
+        if proposal.vetoed {
+            return Err(GovernanceError::ProposalVetoed);
+        }
 
         let voted_key = DataKey::HasVoted(proposal_id, voter.clone());
         if env.storage().persistent().has(&voted_key) {
@@ -418,11 +475,20 @@ impl Governance {
 
         let lp_token: Address = env.storage().instance().get(&DataKey::LpToken).unwrap();
         let lp_client = LpTokenClient::new(&env, &lp_token);
-        let voting_power = lp_client.balance(&voter);
+
+        let (voting_power, lock_accounts) =
+            Self::aggregated_voting_power(&env, &lp_client, &voter, &proposal)?;
         if voting_power == 0 {
             return Err(GovernanceError::NoVotingPower);
         }
-        lp_client.lock(&voter, &voting_power);
+
+        for i in 0..lock_accounts.len() {
+            let (account, amount) = lock_accounts.get(i).unwrap();
+            lp_client.lock(&account, &amount);
+            let lock_key = DataKey::LockedVote(proposal_id, account.clone());
+            env.storage().persistent().set(&lock_key, &amount);
+            Self::bump_key_ttl(&env, &lock_key);
+        }
 
         match choice {
             Vote::For => {
@@ -446,10 +512,6 @@ impl Governance {
         };
         env.storage().persistent().set(&voted_key, &record);
         Self::bump_key_ttl(&env, &voted_key);
-
-        let lock_key = DataKey::LockedVote(proposal_id, voter.clone());
-        env.storage().persistent().set(&lock_key, &voting_power);
-        Self::bump_key_ttl(&env, &lock_key);
 
         env.events().publish(
             (Symbol::new(&env, "voted"),),
@@ -475,6 +537,9 @@ impl Governance {
         }
         if proposal.cancelled {
             return Err(GovernanceError::ProposalCancelled);
+        }
+        if proposal.vetoed {
+            return Err(GovernanceError::ProposalVetoed);
         }
 
         let now = env.ledger().timestamp();
@@ -596,6 +661,7 @@ impl Governance {
                 .instance()
                 .get(&DataKey::MinProposerStakeBps)
                 .unwrap(),
+            veto_multisig: env.storage().instance().get(&DataKey::VetoMultisig),
         }
     }
 
@@ -607,6 +673,8 @@ impl Governance {
             && status != ProposalStatus::Defeated
             && status != ProposalStatus::Expired
             && status != ProposalStatus::Cancelled
+            && status != ProposalStatus::Vetoed
+            && status != ProposalStatus::InDiscussion
         {
             return Err(GovernanceError::ProposalNotConcluded);
         }
@@ -643,6 +711,14 @@ impl Governance {
         if from == to {
             return Err(GovernanceError::CannotDelegateToSelf);
         }
+        if Self::delegation_reaches(&env, &to, &from, 0) {
+            return Err(GovernanceError::DelegationCycle);
+        }
+
+        if let Some(old) = Self::get_delegate(env.clone(), from.clone()) {
+            Self::remove_delegator_index(&env, &old, &from);
+        }
+        Self::add_delegator_index(&env, &to, &from);
 
         env.storage()
             .instance()
@@ -661,6 +737,9 @@ impl Governance {
     /// - `from` – Address removing their delegation; must authorize this call.
     pub fn undelegate(env: Env, from: Address) {
         from.require_auth();
+        if let Some(delegatee) = Self::get_delegate(env.clone(), from.clone()) {
+            Self::remove_delegator_index(&env, &delegatee, &from);
+        }
         env.storage()
             .instance()
             .remove(&DataKey::Delegate(from.clone()));
@@ -679,24 +758,108 @@ impl Governance {
             .unwrap_or(None)
     }
 
-    /// Get the total voting power (own + delegated) for an address at proposal creation.
+    /// Admin-only: set the protocol multisig that may veto passed proposals.
+    pub fn set_veto_multisig(env: Env, multisig: Address) -> Result<(), GovernanceError> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::VetoMultisig, &multisig);
+        env.events()
+            .publish((Symbol::new(&env, "veto_multisig_set"),), (multisig,));
+        Ok(())
+    }
+
+    /// Veto a passed proposal within 24 hours after voting ends.
     ///
-    /// This computes the sum of LP balance for the address and all addresses that have
-    /// delegated to this address.
-    #[allow(dead_code)]
-    fn get_voting_power(env: &Env, voter: &Address) -> i128 {
+    /// Triggers the governance discussion phase; the proposal cannot be executed.
+    pub fn veto(env: Env, proposal_id: u32) -> Result<(), GovernanceError> {
+        let multisig: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::VetoMultisig)
+            .ok_or(GovernanceError::VetoMultisigNotSet)?;
+        multisig.require_auth();
+
+        let proposal_key = DataKey::Proposal(proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&proposal_key)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+        Self::bump_key_ttl(&env, &proposal_key);
+
+        if proposal.executed {
+            return Err(GovernanceError::AlreadyExecuted);
+        }
+        if proposal.cancelled {
+            return Err(GovernanceError::ProposalCancelled);
+        }
+        if proposal.vetoed {
+            return Err(GovernanceError::ProposalVetoed);
+        }
+
+        let now = env.ledger().timestamp();
+        if now <= proposal.vote_end {
+            return Err(GovernanceError::VotingPeriodActive);
+        }
+        if now > proposal.vote_end + VETO_WINDOW_SECS {
+            return Err(GovernanceError::VetoWindowExpired);
+        }
+
+        let quorum_bps: i128 = env.storage().instance().get(&DataKey::QuorumBps).unwrap();
+        let total_votes = proposal.votes_for + proposal.votes_against + proposal.votes_abstain;
+        let quorum_threshold = proposal.snapshot_total_supply * quorum_bps / MAX_BPS;
+        if total_votes < quorum_threshold || proposal.votes_for <= proposal.votes_against {
+            return Err(GovernanceError::ProposalDefeated);
+        }
+
+        let voting_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VotingPeriod)
+            .unwrap();
+        let discussion_end = now + voting_period;
+
+        proposal.vetoed = true;
+        proposal.vetoed_by = Some(multisig.clone());
+        proposal.vetoed_at = Some(now);
+        proposal.discussion_end = Some(discussion_end);
+        env.storage().persistent().set(&proposal_key, &proposal);
+        Self::bump_key_ttl(&env, &proposal_key);
+
+        let audit = VetoAudit {
+            proposal_id,
+            vetoed_by: multisig.clone(),
+            vetoed_at: now,
+            discussion_end,
+        };
+        let audit_key = DataKey::VetoAudit(proposal_id);
+        env.storage().persistent().set(&audit_key, &audit);
+        Self::bump_key_ttl(&env, &audit_key);
+
+        env.events().publish(
+            (Symbol::new(&env, "vetoed"),),
+            (proposal_id, multisig, now, discussion_end),
+        );
+        Ok(())
+    }
+
+    /// Returns the on-chain veto audit record for a proposal, if vetoed.
+    pub fn get_veto_audit(env: Env, proposal_id: u32) -> Option<VetoAudit> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VetoAudit(proposal_id))
+    }
+
+    /// LP balance at proposal snapshot ledger for `holder`.
+    pub fn get_snapshot_balance(env: Env, proposal_id: u32, holder: Address) -> Result<i128, GovernanceError> {
+        let proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Proposal(proposal_id))
+            .ok_or(GovernanceError::ProposalNotFound)?;
         let lp_token: Address = env.storage().instance().get(&DataKey::LpToken).unwrap();
-        let lp_client = LpTokenClient::new(env, &lp_token);
-
-        // Start with voter's own balance
-        let total_power = lp_client.balance(voter);
-
-        // Note: Due to Soroban's storage model, we cannot efficiently iterate over all delegators.
-        // In a production implementation, you'd need to maintain a reverse delegation index
-        // or use an alternative design. For now, we return the voter's own balance.
-        // The delegation voting logic should be implemented off-chain or with a delegatee registry.
-
-        total_power
+        let lp_client = LpTokenClient::new(&env, &lp_token);
+        Ok(lp_client.balance_at(&holder, &proposal.snapshot_ledger))
     }
 
     /// Read a proposal by id.
@@ -730,6 +893,15 @@ impl Governance {
 
         let now = env.ledger().timestamp();
 
+        if proposal.vetoed {
+            if let Some(end) = proposal.discussion_end {
+                if now <= end {
+                    return ProposalStatus::InDiscussion;
+                }
+            }
+            return ProposalStatus::Vetoed;
+        }
+
         if now <= proposal.vote_end {
             return ProposalStatus::Active;
         }
@@ -752,6 +924,138 @@ impl Governance {
         } else {
             ProposalStatus::Pending
         }
+    }
+
+    fn snapshot_voting_power(
+        lp_client: &LpTokenClient,
+        holder: &Address,
+        proposal: &Proposal,
+    ) -> Result<i128, GovernanceError> {
+        let power = lp_client.balance_at(holder, &proposal.snapshot_ledger);
+        let current = lp_client.balance(holder);
+        if current < power {
+            return Err(GovernanceError::InsufficientSnapshotBal);
+        }
+        Ok(power)
+    }
+
+    fn aggregated_voting_power(
+        env: &Env,
+        lp_client: &LpTokenClient,
+        voter: &Address,
+        proposal: &Proposal,
+    ) -> Result<(i128, Vec<(Address, i128)>), GovernanceError> {
+        let mut total: i128 = 0;
+        let mut locks = Vec::new(env);
+        Self::collect_voting_power(env, lp_client, voter, proposal, &mut total, &mut locks, 0)?;
+        Ok((total, locks))
+    }
+
+    fn collect_voting_power(
+        env: &Env,
+        lp_client: &LpTokenClient,
+        holder: &Address,
+        proposal: &Proposal,
+        total: &mut i128,
+        locks: &mut Vec<(Address, i128)>,
+        depth: u32,
+    ) -> Result<(), GovernanceError> {
+        if depth > MAX_DELEGATION_DEPTH {
+            return Err(GovernanceError::DelegationCycle);
+        }
+        let power = Self::snapshot_voting_power(lp_client, holder, proposal)?;
+        if power > 0 {
+            *total += power;
+            locks.push_back((holder.clone(), power));
+        }
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DelegatorCount(holder.clone()))
+            .unwrap_or(0);
+        for i in 0..count {
+            let delegator: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Delegator(holder.clone(), i))
+                .unwrap();
+            Self::collect_voting_power(env, lp_client, &delegator, proposal, total, locks, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    fn delegation_reaches(env: &Env, current: &Address, target: &Address, depth: u32) -> bool {
+        if depth > MAX_DELEGATION_DEPTH {
+            return false;
+        }
+        if current == target {
+            return true;
+        }
+        if let Some(next) = Self::get_delegate(env.clone(), current.clone()) {
+            Self::delegation_reaches(env, &next, target, depth + 1)
+        } else {
+            false
+        }
+    }
+
+    fn add_delegator_index(env: &Env, delegatee: &Address, delegator: &Address) {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DelegatorCount(delegatee.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::Delegator(delegatee.clone(), count), delegator);
+        env.storage()
+            .instance()
+            .set(&DataKey::DelegatorSlot(delegator.clone()), &(delegatee.clone(), count));
+        env.storage()
+            .instance()
+            .set(&DataKey::DelegatorCount(delegatee.clone()), &(count + 1));
+    }
+
+    fn remove_delegator_index(env: &Env, delegatee: &Address, delegator: &Address) {
+        let (stored_delegatee, index): (Address, u32) = env
+            .storage()
+            .instance()
+            .get(&DataKey::DelegatorSlot(delegator.clone()))
+            .unwrap_or((delegatee.clone(), 0));
+        if stored_delegatee != *delegatee {
+            return;
+        }
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DelegatorCount(delegatee.clone()))
+            .unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        let last_index = count - 1;
+        if index != last_index {
+            let last_delegator: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Delegator(delegatee.clone(), last_index))
+                .unwrap();
+            env.storage()
+                .instance()
+                .set(&DataKey::Delegator(delegatee.clone(), index), &last_delegator);
+            env.storage().instance().set(
+                &DataKey::DelegatorSlot(last_delegator.clone()),
+                &(delegatee.clone(), index),
+            );
+        }
+        env.storage()
+            .instance()
+            .remove(&DataKey::Delegator(delegatee.clone(), last_index));
+        env.storage()
+            .instance()
+            .remove(&DataKey::DelegatorSlot(delegator.clone()));
+        env.storage()
+            .instance()
+            .set(&DataKey::DelegatorCount(delegatee.clone()), &last_index);
     }
 
     fn bump_key_ttl(env: &Env, key: &DataKey) {
@@ -1097,14 +1401,15 @@ mod tests {
                 e.0 == gov.address && e.1 == (Symbol::new(&s.env, "proposed"),).into_val(&s.env)
             })
             .expect("proposed event not found");
-        let proposed_data: (u32, Address, ProposalKind, u64) = proposed_evt.2.into_val(&s.env);
+        let proposed_data: (u32, Address, ProposalKind, u64, u32) = proposed_evt.2.into_val(&s.env);
         assert_eq!(
             proposed_data,
             (
                 pid,
                 lp1.clone(),
                 ProposalKind::UpdateFee(50),
-                proposal.vote_end
+                proposal.vote_end,
+                proposal.snapshot_ledger
             )
         );
 
@@ -1386,6 +1691,161 @@ mod tests {
         let data: (u32, i128) = unlock_evt.2.into_val(&s.env);
         assert_eq!(data.0, pid);
         assert_eq!(data.1, 600_i128); // amount_unlocked == voting power used
+    }
+
+    #[test]
+    fn test_snapshot_balance_used_not_current_balance() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+
+        let lp1 = Address::generate(&s.env);
+        let lp2 = Address::generate(&s.env);
+        let buyer = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 600);
+        mint_lp(&s, &lp2, 400);
+
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
+        let proposal = gov.get_proposal(&pid);
+
+        // Acquire LP after snapshot — should not increase voting power.
+        mint_lp(&s, &buyer, 500);
+        assert_eq!(gov.get_snapshot_balance(&pid, &buyer), 0);
+        assert!(gov.try_vote(&buyer, &pid, &Vote::For).is_err());
+
+        assert_eq!(gov.get_snapshot_balance(&pid, &lp1), 600);
+        gov.vote(&lp1, &pid, &Vote::For);
+        gov.vote(&lp2, &pid, &Vote::For);
+
+        s.env.ledger().set_timestamp(proposal.execute_after + 1);
+        gov.execute(&pid);
+        assert_eq!(gov.proposal_status(&pid), ProposalStatus::Executed);
+    }
+
+    #[test]
+    fn test_delegation_aggregates_voting_power() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+
+        let lp1 = Address::generate(&s.env);
+        let lp2 = Address::generate(&s.env);
+        let delegatee = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 600);
+        mint_lp(&s, &lp2, 400);
+
+        gov.delegate(&lp1, &delegatee);
+
+        let pid = gov.propose(&lp2, &ProposalKind::UpdateFee(50));
+        assert!(gov.try_vote(&lp1, &pid, &Vote::For).is_err());
+        gov.vote(&delegatee, &pid, &Vote::For);
+
+        let p = gov.get_proposal(&pid);
+        assert_eq!(p.votes_for, 600);
+    }
+
+    #[test]
+    fn test_undelegate_restores_direct_voting() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+
+        let lp1 = Address::generate(&s.env);
+        let lp2 = Address::generate(&s.env);
+        let delegatee = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 600);
+        mint_lp(&s, &lp2, 400);
+
+        gov.delegate(&lp1, &delegatee);
+        let pid = gov.propose(&lp2, &ProposalKind::UpdateFee(50));
+        gov.undelegate(&lp1);
+        gov.vote(&lp1, &pid, &Vote::For);
+        assert_eq!(gov.get_proposal(&pid).votes_for, 600);
+    }
+
+    #[test]
+    fn test_recursive_delegation_chain() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+
+        let a = Address::generate(&s.env);
+        let b = Address::generate(&s.env);
+        let c = Address::generate(&s.env);
+        let proposer = Address::generate(&s.env);
+        mint_lp(&s, &a, 300);
+        mint_lp(&s, &b, 300);
+        mint_lp(&s, &c, 100);
+        mint_lp(&s, &proposer, 300);
+
+        gov.delegate(&a, &b);
+        gov.delegate(&b, &c);
+
+        let pid = gov.propose(&proposer, &ProposalKind::UpdateFee(50));
+        gov.vote(&c, &pid, &Vote::For);
+        assert_eq!(gov.get_proposal(&pid).votes_for, 700);
+    }
+
+    #[test]
+    fn test_veto_prevents_execution_and_emits_audit() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::IntoVal;
+
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+        let multisig = Address::generate(&s.env);
+        gov.set_veto_multisig(&multisig);
+
+        let lp1 = Address::generate(&s.env);
+        let lp2 = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 600);
+        mint_lp(&s, &lp2, 400);
+
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(99));
+        gov.vote(&lp1, &pid, &Vote::For);
+        gov.vote(&lp2, &pid, &Vote::For);
+
+        let proposal = gov.get_proposal(&pid);
+        s.env.ledger().set_timestamp(proposal.vote_end + 1);
+        gov.veto(&pid);
+
+        assert_eq!(gov.proposal_status(&pid), ProposalStatus::InDiscussion);
+        let audit = gov.get_veto_audit(&pid).unwrap();
+        assert_eq!(audit.proposal_id, pid);
+        assert_eq!(audit.vetoed_by, multisig);
+
+        s.env.ledger().set_timestamp(proposal.execute_after + 1);
+        assert!(gov.try_execute(&pid).is_err());
+
+        let events = s.env.events().all();
+        let veto_evt = events
+            .iter()
+            .find(|e| e.0 == s.gov_addr && e.1 == (Symbol::new(&s.env, "vetoed"),).into_val(&s.env))
+            .expect("vetoed event");
+        let data: (u32, Address, u64, u64) = veto_evt.2.into_val(&s.env);
+        assert_eq!(data.0, pid);
+    }
+
+    #[test]
+    fn test_veto_window_enforced() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+        let multisig = Address::generate(&s.env);
+        gov.set_veto_multisig(&multisig);
+
+        let lp1 = Address::generate(&s.env);
+        let lp2 = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 600);
+        mint_lp(&s, &lp2, 400);
+
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
+        gov.vote(&lp1, &pid, &Vote::For);
+        gov.vote(&lp2, &pid, &Vote::For);
+
+        let proposal = gov.get_proposal(&pid);
+        s.env
+            .ledger()
+            .set_timestamp(proposal.vote_end + VETO_WINDOW_SECS + 1);
+        assert_eq!(
+            gov.try_veto(&pid),
+            Err(Ok(GovernanceError::VetoWindowExpired))
+        );
     }
 }
 

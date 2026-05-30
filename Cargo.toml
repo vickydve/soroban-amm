@@ -5,6 +5,7 @@ members = [
   "contracts/concentrated_liquidity",
   "contracts/factory",
   "contracts/router",
+  "contracts/batch_router",
   "contracts/token",
   "contracts/factory",
   "contracts/twap_consumer",

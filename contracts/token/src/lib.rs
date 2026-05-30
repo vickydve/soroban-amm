@@ -2,7 +2,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec};
 
 // Export compiled WASM for tests/dev usage when the `testutils` feature is enabled.
 // When tests run, the WASM file may not exist; use empty slice to avoid error.
@@ -20,6 +20,16 @@ pub enum DataKey {
     Symbol,
     Decimals,
     TotalSupply,
+    /// Historical balance checkpoints for governance snapshots.
+    Checkpoints(Address),
+}
+
+/// Balance recorded at a ledger sequence (used by `balance_at`).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Checkpoint {
+    pub ledger: u32,
+    pub balance: i128,
 }
 
 #[contract]
@@ -77,6 +87,25 @@ impl LpToken {
             .persistent()
             .get(&DataKey::Balance(id))
             .unwrap_or(0)
+    }
+
+    /// Returns the balance of `id` at or before `ledger` (for governance snapshots).
+    pub fn balance_at(env: Env, id: Address, ledger: u32) -> i128 {
+        let checkpoints: Vec<Checkpoint> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Checkpoints(id))
+            .unwrap_or(Vec::new(&env));
+        let mut result = 0_i128;
+        for i in 0..checkpoints.len() {
+            let cp = checkpoints.get(i).unwrap();
+            if cp.ledger <= ledger {
+                result = cp.balance;
+            } else {
+                break;
+            }
+        }
+        result
     }
 
     /// Returns the amount `spender` is allowed to transfer on behalf of `from`.
@@ -140,7 +169,8 @@ impl LpToken {
         let bal = Self::balance(env.clone(), to.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Balance(to), &(bal + amount));
+            .set(&DataKey::Balance(to.clone()), &(bal + amount));
+        Self::write_checkpoint(&env, &to);
     }
 
     /// Burn tokens — admin only (called by the AMM contract).
@@ -159,6 +189,7 @@ impl LpToken {
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(supply - amount));
+        Self::write_checkpoint(&env, &from);
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
@@ -244,10 +275,31 @@ impl LpToken {
         env.storage()
             .persistent()
             .set(&DataKey::Balance(to.clone()), &(to_bal + amount));
+        Self::write_checkpoint(env, from);
+        Self::write_checkpoint(env, to);
         env.events().publish(
             (Symbol::new(env, "transfer"), from.clone()),
             (to.clone(), amount),
         );
+    }
+
+    fn write_checkpoint(env: &Env, account: &Address) {
+        let ledger = env.ledger().sequence();
+        let balance = Self::balance(env.clone(), account.clone());
+        let key = DataKey::Checkpoints(account.clone());
+        let mut checkpoints: Vec<Checkpoint> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+        if checkpoints.len() > 0 {
+            let last = checkpoints.get(checkpoints.len() - 1).unwrap();
+            if last.ledger == ledger {
+                checkpoints.pop_back();
+            }
+        }
+        checkpoints.push_back(Checkpoint { ledger, balance });
+        env.storage().persistent().set(&key, &checkpoints);
     }
 }
 
@@ -385,6 +437,21 @@ mod tests {
         assert_eq!(client.name(), String::from_str(&ts.env, "Test Token"));
         assert_eq!(client.symbol(), String::from_str(&ts.env, "TST"));
         assert_eq!(client.decimals(), 7u32);
+    }
+
+    #[test]
+    fn test_balance_at_snapshot() {
+        let ts = setup();
+        let client = LpTokenClient::new(&ts.env, &ts.contract_addr);
+        let alice = Address::generate(&ts.env);
+        let bob = Address::generate(&ts.env);
+
+        client.mint(&alice, &1_000_i128);
+        let ledger_after_mint = ts.env.ledger().sequence();
+        client.transfer(&alice, &bob, &400_i128);
+
+        assert_eq!(client.balance_at(&alice, &ledger_after_mint), 1_000);
+        assert_eq!(client.balance(&alice), 600);
     }
 
     #[test]
