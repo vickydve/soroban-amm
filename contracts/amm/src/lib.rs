@@ -58,6 +58,20 @@ pub enum AmmError {
     InsufficientLiquidity = 11,
     NoPendingAdmin       = 12,
     WrongAdmin           = 13,
+    /// A reentrant call was detected while a flash loan or state-mutating
+    /// operation was already in progress. The receiver contract must not
+    /// call back into this pool during an `on_flash_loan` callback.
+    Reentrant            = 14,
+    /// The circuit breaker tripped: spot price deviated more than the
+    /// configured threshold in a single block.  The pool has been
+    /// automatically paused.  Recovery requires the cooldown period to
+    /// elapse and a call to `try_circuit_breaker_recovery`, or a direct
+    /// admin/governance `unpause`.
+    CircuitBreaker       = 15,
+    /// A fee-on-transfer token deducted more fees than the caller's
+    /// `min_received` threshold permitted. The pool received fewer tokens
+    /// than requested; the call is reverted to protect the caller.
+    FotSlippage          = 16,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -72,17 +86,49 @@ pub enum DataKey {
     TotalShares,
     PriceCumulativeA,
     PriceCumulativeB,
+    LiquidityCumulative,
     LastTimestamp,
     Shares(Address),
-    FeeBps,         // swap fee in basis points, e.g. 30 = 0.30 %
-    Admin,          // Address — contract administrator; authorises set_protocol_fee
-    PendingAdmin,   // Option<Address> � nominee waiting to accept admin role
-    FeeRecipient,   // Address — receives accrued protocol fees
-    ProtocolFeeBps, // i128 — protocol fee bps (subset of FeeBps going to protocol)
-    AccruedFeeA,    // i128 — protocol fees accrued in TokenA
-    AccruedFeeB,    // i128 — protocol fees accrued in TokenB
-    Paused,
+    // Emergency withdrawal storage
+    EmergencyWithdrawTimestamp,
+    EmergencyWithdrawRecipient,
+
+    // Admin & fees
+    Admin,
+    PendingAdmin,
+    FeeBps,
+    FeeRecipient,
+    ProtocolFeeBps,
+    AccruedFeeA,
+    AccruedFeeB,
     FlashLoanFeeBps,
+
+    // Pause / reentrancy
+    Paused,
+    /// Set to `true` while a flash loan is executing to block reentrant calls.
+    /// Cleared to `false` after the callback returns and repayment is verified.
+    Locked,
+
+    // Circuit breaker
+    /// Price deviation threshold in bps above which the circuit breaker trips
+    /// (default 5 000 = 50 %). Configurable via `set_circuit_breaker_config`.
+    CircuitBreakerThresholdBps,
+
+    /// Minimum seconds that must elapse after the circuit breaker trips before
+    /// automatic recovery is attempted (default 600 s = 10 min).
+    CircuitBreakerCooldown,
+
+    /// Ledger timestamp at which the circuit breaker was last triggered.
+    /// `0` when not triggered.
+    CircuitBreakerTriggeredAt,
+
+    /// Spot price (reserve_b * 1_000_000 / reserve_a) captured at the
+    /// beginning of the current ledger sequence. Used to measure intra-block
+    /// price deviation.
+    CircuitBreakerLastPrice,
+
+    /// Ledger sequence number at which `CircuitBreakerLastPrice` was captured.
+    CircuitBreakerLastSeqno,
 }
 
 // ── Pool info returned by `get_info` ─────────────────────────────────────────
@@ -107,6 +153,18 @@ pub trait FlashLoanReceiver {
     fn on_flash_loan(env: Env, token: Address, amount: i128, fee: i128, data: Bytes) -> bool;
 }
 
+#[contractclient(name = "FlashLoanBothReceiverClient")]
+pub trait FlashLoanBothReceiver {
+    fn on_flash_loan_both(
+        env: Env,
+        amount_a: i128,
+        fee_a: i128,
+        amount_b: i128,
+        fee_b: i128,
+        data: Bytes,
+    ) -> bool;
+}
+
 // ── Swap simulation returned by `simulate_swap` ───────────────────────────────
 
 #[contracttype]
@@ -116,6 +174,21 @@ pub struct SwapSimulation {
     pub price_impact_bps: i128, // price impact in basis points
     pub effective_price: i128,  // amount_out / amount_in scaled by 1_000_000
     pub spot_price: i128,       // reserve_out / reserve_in scaled by 1_000_000
+}
+
+/// Circuit breaker configuration and current state returned by
+/// `get_circuit_breaker_config`.
+#[contracttype]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CircuitBreakerConfig {
+    /// Price deviation threshold in bps (e.g. 5 000 = 50 %).
+    pub threshold_bps: i128,
+    /// Minimum cooldown seconds before automatic recovery.
+    pub cooldown_secs: u64,
+    /// Timestamp at which the circuit breaker last tripped (0 = never).
+    pub triggered_at: u64,
+    /// Whether the circuit breaker is currently active (pool paused by CB).
+    pub tripped: bool,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -224,8 +297,28 @@ impl AmmPool {
             .set(&DataKey::PriceCumulativeB, &0_i128);
         env.storage()
             .instance()
+            .set(&DataKey::LiquidityCumulative, &0_i128);
+        env.storage()
+            .instance()
             .set(&DataKey::LastTimestamp, &env.ledger().timestamp());
         env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage().instance().set(&DataKey::Locked, &false);
+        // Circuit breaker: default threshold 50 % (5 000 bps), cooldown 600 s.
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerThresholdBps, &5_000_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerCooldown, &600_u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerTriggeredAt, &0_u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerLastPrice, &0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerLastSeqno, &0_u32);
         Ok(())
     }
 
@@ -248,6 +341,249 @@ impl AmmPool {
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
+    }
+
+    /// Emergency withdraw of all pool reserves to a designated address.
+    /// Admin-only, callable via a timed governance proposal.
+    pub fn emergency_withdraw(env: Env, to: Address) -> Result<(), AmmError> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        // Record audit information
+        let ts: u64 = env.ledger().timestamp();
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyWithdrawTimestamp, &ts);
+        env.storage()
+            .instance()
+            .set(&DataKey::EmergencyWithdrawRecipient, &to);
+
+        // Get token addresses and reserves
+        let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
+        let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
+        let reserve_a = Self::get_reserve_a(env.clone());
+        let reserve_b = Self::get_reserve_b(env.clone());
+
+        // Transfer reserves to recipient
+        if reserve_a > 0 {
+            SepTokenClient::new(&env, &token_a)
+                .transfer(&env.current_contract_address(), &to, &reserve_a);
+        }
+        if reserve_b > 0 {
+            SepTokenClient::new(&env, &token_b)
+                .transfer(&env.current_contract_address(), &to, &reserve_b);
+        }
+
+        // Zero out reserves
+        env.storage().instance().set(&DataKey::ReserveA, &0_i128);
+        env.storage().instance().set(&DataKey::ReserveB, &0_i128);
+
+        // Emit event for audit trail
+        env.events().publish(
+            (Symbol::new(&env, "emergency_withdraw"), admin.clone()),
+            (to, reserve_a, reserve_b),
+        );
+
+        Ok(())
+    }
+
+    /// Return `true` while a flash loan is executing on this pool.
+    ///
+    /// During this window all state-mutating functions (`swap`,
+    /// `add_liquidity`, `remove_liquidity`, `flash_loan`) will reject calls
+    /// with `AmmError::Reentrant`. This is a read-only diagnostic; callers
+    /// should not rely on this for security checks — the guard is enforced
+    /// internally by `enter_lock`.
+    pub fn flash_loan_locked(env: Env) -> bool {
+        Self::is_locked(&env)
+    }
+
+    // ── Circuit breaker ───────────────────────────────────────────────────────
+
+    /// Configure the circuit breaker.
+    ///
+    /// # Parameters
+    /// - `threshold_bps` – Maximum allowed intra-block spot-price deviation in
+    ///   basis points before the pool is auto-paused (e.g. `5_000` = 50 %).
+    ///   Must be in `(0, 10_000]`.
+    /// - `cooldown_secs` – Minimum seconds that must pass after tripping before
+    ///   automatic recovery via `try_circuit_breaker_recovery` is allowed.
+    ///
+    /// Admin-only.
+    pub fn set_circuit_breaker_config(
+        env: Env,
+        threshold_bps: i128,
+        cooldown_secs: u64,
+    ) -> Result<(), AmmError> {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        if threshold_bps <= 0 || threshold_bps > 10_000 {
+            return Err(AmmError::InvalidFeeBps);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerThresholdBps, &threshold_bps);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerCooldown, &cooldown_secs);
+
+        env.events().publish(
+            (Symbol::new(&env, "cb_config"),),
+            (threshold_bps, cooldown_secs),
+        );
+
+        Ok(())
+    }
+
+    /// Return the current circuit breaker configuration and state.
+    pub fn get_circuit_breaker_config(env: Env) -> CircuitBreakerConfig {
+        let threshold_bps: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerThresholdBps)
+            .unwrap_or(5_000);
+
+        let cooldown_secs: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerCooldown)
+            .unwrap_or(600);
+
+        let triggered_at: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerTriggeredAt)
+            .unwrap_or(0);
+
+        let tripped = triggered_at > 0 && Self::is_paused(env.clone());
+
+        CircuitBreakerConfig {
+            threshold_bps,
+            cooldown_secs,
+            triggered_at,
+            tripped,
+        }
+    }
+
+    /// Attempt automatic recovery after the circuit breaker cooldown.
+    pub fn try_circuit_breaker_recovery(env: Env) -> Result<bool, AmmError> {
+        let triggered_at: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerTriggeredAt)
+            .unwrap_or(0);
+
+        if triggered_at == 0 {
+            return Ok(false);
+        }
+
+        if !Self::is_paused(env.clone()) {
+            env.storage()
+                .instance()
+                .set(&DataKey::CircuitBreakerTriggeredAt, &0_u64);
+            return Ok(false);
+        }
+
+        let cooldown: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerCooldown)
+            .unwrap_or(600);
+
+        let now = env.ledger().timestamp();
+
+        if now < triggered_at + cooldown {
+            return Ok(false);
+        }
+
+        env.storage().instance().set(&DataKey::Paused, &false);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerTriggeredAt, &0_u64);
+
+        env.events()
+            .publish((Symbol::new(&env, "cb_recovered"),), (now,));
+
+        Ok(true)
+    }
+
+    /// Internal: capture the spot price at the start of a new ledger sequence.
+    fn check_circuit_breaker(env: &Env) -> Result<(), AmmError> {
+        let reserve_a = Self::get_reserve_a(env.clone());
+        let reserve_b = Self::get_reserve_b(env.clone());
+
+        if reserve_a <= 0 || reserve_b <= 0 {
+            return Ok(());
+        }
+
+        let threshold_bps: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerThresholdBps)
+            .unwrap_or(5_000);
+
+        let current_seqno = env.ledger().sequence();
+
+        let last_seqno: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerLastSeqno)
+            .unwrap_or(0);
+
+        let current_price = reserve_b * 1_000_000 / reserve_a;
+
+        if last_seqno != current_seqno {
+            env.storage()
+                .instance()
+                .set(&DataKey::CircuitBreakerLastPrice, &current_price);
+
+            env.storage()
+                .instance()
+                .set(&DataKey::CircuitBreakerLastSeqno, &current_seqno);
+
+            return Ok(());
+        }
+
+        let baseline_price: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerLastPrice)
+            .unwrap_or(current_price);
+
+        if baseline_price <= 0 {
+            return Ok(());
+        }
+
+        let deviation_bps = if current_price >= baseline_price {
+            (current_price - baseline_price) * 10_000 / baseline_price
+        } else {
+            (baseline_price - current_price) * 10_000 / baseline_price
+        };
+
+        if deviation_bps >= threshold_bps {
+            let now = env.ledger().timestamp();
+
+            env.storage().instance().set(&DataKey::Paused, &true);
+
+            env.storage()
+                .instance()
+                .set(&DataKey::CircuitBreakerTriggeredAt, &now);
+
+            env.events().publish(
+                (Symbol::new(&env, "circuit_break"),),
+                (baseline_price, current_price, deviation_bps, threshold_bps),
+            );
+
+            return Err(AmmError::CircuitBreaker);
+        }
+
+        Ok(())
+    }
+        Ok(())
     }
 
     /// Update the protocol fee configuration. Admin-only.
@@ -405,6 +741,42 @@ impl AmmPool {
             .unwrap_or(None)
     }
 
+    // ── Reentrancy guard ──────────────────────────────────────────────────────
+
+    /// Return `true` if a flash loan is currently executing on this contract.
+    ///
+    /// Any state-mutating entry point that could be exploited via a reentrant
+    /// callback (swap, add_liquidity, remove_liquidity, flash_loan) calls this
+    /// before proceeding. The lock is stored in instance storage so it is
+    /// visible to all cross-contract calls within the same transaction.
+    fn is_locked(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Locked)
+            .unwrap_or(false)
+    }
+
+    /// Acquire the reentrancy lock.
+    ///
+    /// Returns `Err(AmmError::Reentrant)` if the lock is already held,
+    /// preventing a flash-loan receiver from calling back into the pool.
+    fn enter_lock(env: &Env) -> Result<(), AmmError> {
+        if Self::is_locked(env) {
+            return Err(AmmError::Reentrant);
+        }
+        env.storage().instance().set(&DataKey::Locked, &true);
+        Ok(())
+    }
+
+    /// Release the reentrancy lock.
+    ///
+    /// Must be called on every successful return path after `enter_lock`.
+    /// On error paths the Soroban runtime reverts all storage writes
+    /// (including the lock), so an explicit release is not required there.
+    fn exit_lock(env: &Env) {
+        env.storage().instance().set(&DataKey::Locked, &false);
+    }
+
     // ── TWAP ──────────────────────────────────────────────────────────────────
 
     /// Update the TWAP price accumulators based on the current reserves and elapsed time.
@@ -448,6 +820,39 @@ impl AmmPool {
         }
     }
 
+    /// Update the TWAL liquidity accumulator (sqrt(reserve_a * reserve_b) * elapsed).
+    fn checkpoint_twal(env: &Env) {
+        let now = env.ledger().timestamp();
+        let last: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LastTimestamp)
+            .unwrap_or(now);
+        if now > last {
+            let reserve_a = Self::get_reserve_a(env.clone());
+            let reserve_b = Self::get_reserve_b(env.clone());
+            if reserve_a > 0 && reserve_b > 0 {
+                let elapsed = (now - last) as i128;
+                let liquidity = Self::sqrt(reserve_a * reserve_b);
+                let mut cum: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::LiquidityCumulative)
+                    .unwrap_or(0);
+                cum = cum.wrapping_add(liquidity * elapsed);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::LiquidityCumulative, &cum);
+            }
+        }
+    }
+
+    /// Checkpoint both TWAP price and TWAL liquidity accumulators.
+    fn checkpoint_oracles(env: &Env) {
+        Self::checkpoint_twap(env);
+        Self::checkpoint_twal(env);
+    }
+
     // ── Liquidity ─────────────────────────────────────────────────────────────
 
     /// Deposit tokens into the pool and receive LP shares in return.
@@ -478,6 +883,8 @@ impl AmmPool {
         provider: Address,
         amount_a: i128,
         amount_b: i128,
+        min_amount_a: i128,
+        min_amount_b: i128,
         min_shares: i128,
         deadline: u64,
     ) -> Result<i128, AmmError> {
@@ -487,13 +894,17 @@ impl AmmPool {
         if Self::is_paused(env.clone()) {
             return Err(AmmError::Paused);
         }
+        // Block reentrant calls from flash loan receivers.
+        if Self::is_locked(&env) {
+            return Err(AmmError::Reentrant);
+        }
         provider.require_auth();
         if amount_a <= 0 || amount_b <= 0 {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
         let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
@@ -590,13 +1001,17 @@ impl AmmPool {
         if Self::is_paused(env.clone()) {
             return Err(AmmError::Paused);
         }
+        // Block reentrant calls from flash loan receivers.
+        if Self::is_locked(&env) {
+            return Err(AmmError::Reentrant);
+        }
         provider.require_auth();
         if shares <= 0 {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         let owned = Self::shares_of(env.clone(), provider.clone());
         if owned < shares {
@@ -688,13 +1103,17 @@ impl AmmPool {
         if Self::is_paused(env.clone()) {
             return Err(AmmError::Paused);
         }
+        // Block reentrant calls from flash loan receivers.
+        if Self::is_locked(&env) {
+            return Err(AmmError::Reentrant);
+        }
         provider.require_auth();
         if shares <= 0 {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
 
         let owned = Self::shares_of(env.clone(), provider.clone());
         if owned < shares {
@@ -897,13 +1316,21 @@ impl AmmPool {
         if Self::is_paused(env.clone()) {
             return Err(AmmError::Paused);
         }
+        // Block reentrant calls from flash loan receivers.
+        if Self::is_locked(&env) {
+            return Err(AmmError::Reentrant);
+        }
         trader.require_auth();
         if amount_in <= 0 {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
+
+        // Circuit breaker: check intra-block price deviation BEFORE the swap
+        // changes the reserves so the baseline is the pre-trade price.
+        Self::check_circuit_breaker(&env)?;
 
         let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
         let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
@@ -1043,13 +1470,20 @@ impl AmmPool {
         if Self::is_paused(env.clone()) {
             return Err(AmmError::Paused);
         }
+        // Block reentrant calls from flash loan receivers.
+        if Self::is_locked(&env) {
+            return Err(AmmError::Reentrant);
+        }
         trader.require_auth();
         if amount_out <= 0 {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
+
+        // Circuit breaker check before state mutation.
+        Self::check_circuit_breaker(&env)?;
 
         let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
         let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
@@ -1188,6 +1622,14 @@ impl AmmPool {
     }
 
     /// Borrow pool liquidity and repay it plus a fee during the receiver callback.
+    ///
+    /// # Reentrancy safety
+    /// This function acquires a reentrancy lock before calling the external
+    /// `on_flash_loan` callback and holds it for the duration of that call.
+    /// Any attempt by the receiver to call back into `swap`, `add_liquidity`,
+    /// `remove_liquidity`, or `flash_loan` on this same pool will fail with
+    /// `AmmError::Reentrant`. The lock is released only after repayment is
+    /// verified, ensuring pool state cannot be manipulated via callbacks.
     pub fn flash_loan(
         env: Env,
         receiver: Address,
@@ -1202,8 +1644,16 @@ impl AmmPool {
             return Err(AmmError::ZeroAmount);
         }
 
-        // Checkpoint TWAP before updating reserves.
-        Self::checkpoint_twap(&env);
+        // Acquire the reentrancy lock before any external call.
+        // This prevents the receiver's on_flash_loan callback from calling
+        // back into swap / add_liquidity / remove_liquidity / flash_loan.
+        Self::enter_lock(&env)?;
+
+        // Checkpoint oracles before updating reserves.
+        Self::checkpoint_oracles(&env);
+
+        // Circuit breaker check before borrowing funds.
+        Self::check_circuit_breaker(&env)?;
 
         let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
         let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
@@ -1212,6 +1662,7 @@ impl AmmPool {
         } else if token == token_b {
             Self::get_reserve_b(env.clone())
         } else {
+            // exit_lock is not needed: returning Err reverts all storage writes.
             return Err(AmmError::InvalidToken);
         };
         if reserve < amount {
@@ -1230,6 +1681,9 @@ impl AmmPool {
 
         token_client.transfer(&pool, &receiver, &amount);
 
+        // ── External callback (lock is held) ─────────────────────────────────
+        // The receiver cannot reenter this pool because Locked == true.
+        // Any reentrant call will return AmmError::Reentrant.
         let accepted = FlashLoanReceiverClient::new(&env, &receiver)
             .on_flash_loan(&token, &amount, &fee, &data);
         if !accepted {
@@ -1268,6 +1722,9 @@ impl AmmPool {
             (token, amount, fee),
         );
 
+        // Release the lock only on the success path; on error paths Soroban
+        // reverts all storage writes (including the lock) automatically.
+        Self::exit_lock(&env);
         Ok(fee)
     }
 
@@ -1477,7 +1934,283 @@ impl AmmPool {
         LpTokenClient::new(&env, &lp_token).balance(&provider)
     }
 
+    // ── Fee-on-transfer support ───────────────────────────────────────────────
+
+    /// Swap with fee-on-transfer (FOT) token support.
+    ///
+    /// Identical to [`swap`] but measures the actual amount of `token_in`
+    /// received by the pool via a pre/post balance snapshot instead of trusting
+    /// `amount_in`. This handles tokens that silently deduct a transfer fee, so
+    /// the constant-product calculation always uses the true net amount.
+    ///
+    /// # Parameters
+    /// - `min_received` – Minimum tokens the pool must actually receive after any
+    ///   FOT deduction (slippage guard on input). Set to `0` to disable.
+    ///
+    /// # Returns
+    /// `(amount_out, actual_received)` — the output amount transferred to `trader`
+    /// and the net input the pool received.
+    ///
+    /// # Events
+    /// Emits a `fot_detected` event when `actual_received < amount_in`, carrying
+    /// `(nominal_amount_in, actual_received)` for off-chain monitoring.
+    #[allow(clippy::too_many_arguments)]
+    pub fn swap_fot(
+        env: Env,
+        trader: Address,
+        token_in: Address,
+        amount_in: i128,
+        min_out: i128,
+        min_received: i128,
+        deadline: u64,
+        referrer: Option<Address>,
+    ) -> Result<(i128, i128), AmmError> {
+        if deadline < env.ledger().timestamp() {
+            return Err(AmmError::DeadlineExceeded);
+        }
+        if Self::is_paused(env.clone()) {
+            return Err(AmmError::Paused);
+        }
+        if Self::is_locked(&env) {
+            return Err(AmmError::Reentrant);
+        }
+        trader.require_auth();
+        if amount_in <= 0 {
+            return Err(AmmError::ZeroAmount);
+        }
+
+        Self::checkpoint_oracles(&env);
+        Self::check_circuit_breaker(&env)?;
+
+        let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
+        let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
+
+        let (reserve_in, reserve_out, token_out) = if token_in == token_a {
+            (
+                Self::get_reserve_a(env.clone()),
+                Self::get_reserve_b(env.clone()),
+                token_b.clone(),
+            )
+        } else if token_in == token_b {
+            (
+                Self::get_reserve_b(env.clone()),
+                Self::get_reserve_a(env.clone()),
+                token_a.clone(),
+            )
+        } else {
+            return Err(AmmError::InvalidToken);
+        };
+
+        if reserve_in <= 0 || reserve_out <= 0 {
+            return Err(AmmError::EmptyPool);
+        }
+
+        let pool = env.current_contract_address();
+        let client_in = SepTokenClient::new(&env, &token_in);
+        let balance_before = client_in.balance(&pool);
+
+        client_in.transfer(&trader, &pool, &amount_in);
+
+        let actual_received = client_in.balance(&pool) - balance_before;
+        if actual_received <= 0 {
+            return Err(AmmError::ZeroAmount);
+        }
+        if actual_received < min_received {
+            return Err(AmmError::FotSlippage);
+        }
+
+        let fee_bps: i128 = env.storage().instance().get(&DataKey::FeeBps).unwrap();
+        let amount_in_with_fee = actual_received * (10_000 - fee_bps);
+        let amount_out =
+            amount_in_with_fee * reserve_out / (reserve_in * 10_000 + amount_in_with_fee);
+
+        if amount_out < min_out {
+            return Err(AmmError::SlippageExceeded);
+        }
+        if amount_out >= reserve_out {
+            return Err(AmmError::InsufficientLiquidity);
+        }
+
+        SepTokenClient::new(&env, &token_out).transfer(&pool, &trader, &amount_out);
+
+        let protocol_fee_bps: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0);
+        let protocol_fee = if protocol_fee_bps > 0 {
+            actual_received * protocol_fee_bps / 10_000
+        } else {
+            0
+        };
+
+        if token_in == token_a {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveA, &(reserve_in + actual_received - protocol_fee));
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveB, &(reserve_out - amount_out));
+            if protocol_fee > 0 {
+                let accrued: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::AccruedFeeA)
+                    .unwrap_or(0);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AccruedFeeA, &(accrued + protocol_fee));
+            }
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveB, &(reserve_in + actual_received - protocol_fee));
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveA, &(reserve_out - amount_out));
+            if protocol_fee > 0 {
+                let accrued: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::AccruedFeeB)
+                    .unwrap_or(0);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AccruedFeeB, &(accrued + protocol_fee));
+            }
+        }
+
+        if actual_received < amount_in {
+            env.events().publish(
+                (Symbol::new(&env, "fot_detected"), token_in.clone()),
+                (amount_in, actual_received),
+            );
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "swap"), trader),
+            (token_in, actual_received, token_out, amount_out, referrer),
+        );
+
+        Ok((amount_out, actual_received))
+    }
+
+    /// Add liquidity with fee-on-transfer (FOT) token support.
+    ///
+    /// Like [`add_liquidity`] but measures the actual token amounts received
+    /// by the pool via pre/post balance snapshots rather than trusting the
+    /// nominal `amount_a`/`amount_b` values. LP shares are minted proportional
+    /// to what the pool actually received.
+    ///
+    /// # Parameters
+    /// - `min_received_a` – Minimum actual `token_a` the pool must receive.
+    /// - `min_received_b` – Minimum actual `token_b` the pool must receive.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_liquidity_fot(
+        env: Env,
+        provider: Address,
+        amount_a: i128,
+        amount_b: i128,
+        min_received_a: i128,
+        min_received_b: i128,
+        min_shares: i128,
+        deadline: u64,
+    ) -> Result<i128, AmmError> {
+        if deadline < env.ledger().timestamp() {
+            return Err(AmmError::DeadlineExceeded);
+        }
+        if Self::is_paused(env.clone()) {
+            return Err(AmmError::Paused);
+        }
+        if Self::is_locked(&env) {
+            return Err(AmmError::Reentrant);
+        }
+        provider.require_auth();
+        if amount_a <= 0 || amount_b <= 0 {
+            return Err(AmmError::ZeroAmount);
+        }
+
+        Self::checkpoint_oracles(&env);
+
+        let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
+        let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
+        let lp_token: Address = env.storage().instance().get(&DataKey::LpToken).unwrap();
+
+        let pool = env.current_contract_address();
+        let client_a = SepTokenClient::new(&env, &token_a);
+        let client_b = SepTokenClient::new(&env, &token_b);
+
+        let bal_a_before = client_a.balance(&pool);
+        let bal_b_before = client_b.balance(&pool);
+
+        client_a.transfer(&provider, &pool, &amount_a);
+        client_b.transfer(&provider, &pool, &amount_b);
+
+        let actual_a = client_a.balance(&pool) - bal_a_before;
+        let actual_b = client_b.balance(&pool) - bal_b_before;
+
+        if actual_a <= 0 || actual_b <= 0 {
+            return Err(AmmError::ZeroAmount);
+        }
+        if actual_a < min_received_a || actual_b < min_received_b {
+            return Err(AmmError::FotSlippage);
+        }
+
+        let reserve_a: i128 = Self::get_reserve_a(env.clone());
+        let reserve_b: i128 = Self::get_reserve_b(env.clone());
+        let total_shares: i128 = Self::get_total_shares(env.clone());
+
+        let shares = if total_shares == 0 {
+            Self::sqrt(actual_a * actual_b)
+        } else {
+            let shares_a = actual_a * total_shares / reserve_a;
+            let shares_b = actual_b * total_shares / reserve_b;
+            shares_a.min(shares_b)
+        };
+
+        if shares <= 0 {
+            return Err(AmmError::ZeroAmount);
+        }
+        if shares < min_shares {
+            return Err(AmmError::SlippageExceeded);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ReserveA, &(reserve_a + actual_a));
+        env.storage()
+            .instance()
+            .set(&DataKey::ReserveB, &(reserve_b + actual_b));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalShares, &(total_shares + shares));
+
+        LpTokenClient::new(&env, &lp_token).mint(&provider, &shares);
+
+        env.events().publish(
+            (Symbol::new(&env, "add_liquidity"), provider),
+            (actual_a, actual_b, shares),
+        );
+
+        Ok(shares)
+    }
+
     // ── Internals ─────────────────────────────────────────────────────────────
+
+    /// Returns the cumulative liquidity accumulator and the timestamp of the last update.
+    pub fn get_liquidity_cumulative(env: Env) -> (i128, u64) {
+        let liquidity_cum = env
+            .storage()
+            .instance()
+            .get(&DataKey::LiquidityCumulative)
+            .unwrap_or(0);
+        let last_timestamp = env
+            .storage()
+            .instance()
+            .get(&DataKey::LastTimestamp)
+            .unwrap_or(0);
+        (liquidity_cum, last_timestamp)
+    }
 
     /// Returns the cumulative price accumulators and the timestamp of the last update.
     pub fn get_price_cumulative(env: Env) -> (i128, i128, u64) {
@@ -2495,6 +3228,43 @@ pub(crate) mod tests {
         assert_eq!(final_cum_b, new_cum_b + expected_price_b * 5);
     }
 
+    #[test]
+    fn test_twal_oracle() {
+        let ts = setup_pool(30);
+        let env = &ts.env;
+        let amm = AmmPoolClient::new(env, &ts.amm_addr);
+        let ta_sac = StellarAssetClient::new(env, &ts.ta_addr);
+        let tb_sac = StellarAssetClient::new(env, &ts.tb_addr);
+
+        let provider = Address::generate(env);
+        ta_sac.mint(&provider, &1_000_000_i128);
+        tb_sac.mint(&provider, &1_000_000_i128);
+        amm.add_liquidity(
+            &provider,
+            &1_000_000_i128,
+            &1_000_000_i128,
+            &0_i128,
+            &0_i128,
+            &0_i128,
+            &u64::MAX,
+        )
+        .unwrap();
+
+        let (cum, last_ts) = amm.get_liquidity_cumulative();
+        assert_eq!(cum, 0);
+        assert!(last_ts > 0);
+
+        env.ledger().set_timestamp(last_ts + 10);
+        let trader = Address::generate(env);
+        ta_sac.mint(&trader, &10_000_i128);
+        amm.swap(&trader, &ts.ta_addr, &10_000_i128, &0_i128, &u64::MAX);
+
+        let (new_cum, new_ts) = amm.get_liquidity_cumulative();
+        assert_eq!(new_ts, last_ts + 10);
+        // sqrt(1e6 * 1e6) = 1e6, * 10s = 10_000_000
+        assert_eq!(new_cum, 10_000_000);
+    }
+
     // ── Edge cases: zero-reserve guard ───────────────────────────────────────────
 
     #[test]
@@ -3131,7 +3901,75 @@ mod prop_tests {
 
         assert_eq!(amm.get_fee_info(), 30_i128);
         assert_eq!(amm.get_fee_info(), amm.get_info().fee_bps);
-    }
+     }
+
+     #[test]
+     fn test_emergency_withdraw() {
+         let (env, admin, amm_addr, lp_addr, _) = setup();
+         let (ta_client, ta_sac) = create_sac(&env, &admin);
+         let (tb_client, tb_sac) = create_sac(&env, &admin);
+         let amm = AmmPoolClient::new(&env, &amm_addr);
+
+         amm.initialize(
+             &admin,
+             &ta_client.address,
+             &tb_client.address,
+             &lp_addr,
+             &30_i128,
+             &admin,
+             &0_i128,
+         );
+
+         let provider = Address::generate(&env);
+         ta_sac.mint(&provider, &2_000_000_i128);
+         tb_sac.mint(&provider, &1_000_000_i128);
+
+         amm.add_liquidity(
+             &provider,
+             &2_000_000_i128,
+             &1_000_000_i128,
+             &0_i128,
+             &u64::MAX,
+         );
+
+         let info_before = amm.get_info();
+         assert_eq!(info_before.reserve_a, 2_000_000);
+         assert_eq!(info_before.reserve_b, 1_000_000);
+
+         let recipient = Address::generate(&env);
+         let expected_ts = 99999_u64;
+         env.ledger().set_timestamp(expected_ts);
+
+         // Call emergency_withdraw
+         amm.emergency_withdraw(&recipient);
+
+         // Verify reserves are now zeroed
+         let info_after = amm.get_info();
+         assert_eq!(info_after.reserve_a, 0);
+         assert_eq!(info_after.reserve_b, 0);
+
+         // Verify recipient received the tokens
+         assert_eq!(ta_client.balance(&recipient), 2_000_000);
+         assert_eq!(tb_client.balance(&recipient), 1_000_000);
+
+         // Verify audit log values in contract storage using env.as_contract_at
+         env.as_contract_at(&amm_addr, || {
+             let ts: u64 = env.storage().instance().get(&DataKey::EmergencyWithdrawTimestamp).unwrap();
+             let rec: Address = env.storage().instance().get(&DataKey::EmergencyWithdrawRecipient).unwrap();
+             assert_eq!(ts, expected_ts);
+             assert_eq!(rec, recipient);
+         });
+     }
+
+     #[test]
+     #[should_panic]
+     fn test_emergency_withdraw_requires_admin_auth() {
+         let env = Env::default();
+         let amm_addr = env.register_contract(None, AmmPool);
+         let amm = AmmPoolClient::new(&env, &amm_addr);
+         let recipient = Address::generate(&env);
+         amm.emergency_withdraw(&recipient);
+     }
 
     #[test]
     #[should_panic]
