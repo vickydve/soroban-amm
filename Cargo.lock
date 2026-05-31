@@ -738,10 +738,13 @@ version = "0.1.0"
 dependencies = [
  "amm",
  "concentrated_liquidity",
+ "dex-aggregator",
  "factory",
  "governance",
+ "incentive-campaigns",
  "soroban-sdk",
  "token",
+ "twal-consumer",
  "twap-consumer",
 ]
 
