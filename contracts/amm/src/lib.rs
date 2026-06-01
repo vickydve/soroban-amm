@@ -26,6 +26,20 @@ use soroban_sdk::token::Client as SepTokenClient;
 ///
 /// We define this locally rather than importing the `token` crate to avoid
 /// duplicate symbol errors during the WASM build.
+/// Oracle aggregator price quote (#318).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AggregatedPrice {
+    pub price: i128,
+    pub confidence: u32,
+}
+
+#[contractclient(name = "OracleAggregatorClient")]
+pub trait OracleAggregatorInterface {
+    /// Returns median price + confidence; confidence 0 when sources are stale.
+    fn get_price_safe(env: Env, token_a: Address, token_b: Address) -> AggregatedPrice;
+}
+
 #[soroban_sdk::contractclient(name = "LpTokenClient")]
 pub trait LpTokenInterface {
     fn initialize(
@@ -72,6 +86,8 @@ pub enum AmmError {
     /// `min_received` threshold permitted. The pool received fewer tokens
     /// than requested; the call is reverted to protect the caller.
     FotSlippage          = 16,
+    /// Spot price deviated beyond the configured oracle tolerance.
+    OracleDeviationExceeded = 17,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -88,8 +104,6 @@ pub enum DataKey {
     PriceCumulativeB,
     LiquidityCumulative,
     LastTimestamp,
-   Shares(Address),
-    Admin,
     Shares(Address),
     // Emergency withdrawal storage
     EmergencyWithdrawTimestamp,
@@ -104,8 +118,6 @@ pub enum DataKey {
     AccruedFeeA,
     AccruedFeeB,
     FlashLoanFeeBps,
-    Paused,
-    PendingAdmin,
 
     // Pause / reentrancy
     Paused,
@@ -133,6 +145,11 @@ pub enum DataKey {
 
     /// Ledger sequence number at which `CircuitBreakerLastPrice` was captured.
     CircuitBreakerLastSeqno,
+
+    /// Optional oracle aggregator for pre-swap deviation checks (#318).
+    OracleAggregator,
+    /// Max allowed spot-vs-oracle deviation in basis points (e.g. 500 = 5 %).
+    MaxOracleDeviationBps,
 }
 
 // ── Pool info returned by `get_info` ─────────────────────────────────────────
@@ -323,6 +340,46 @@ impl AmmPool {
         env.storage()
             .instance()
             .set(&DataKey::CircuitBreakerLastSeqno, &0_u32);
+        // Oracle deviation guard (#318): disabled until admin configures an oracle.
+        env.storage()
+            .instance()
+            .set(&DataKey::OracleAggregator, &Option::<Address>::None);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxOracleDeviationBps, &500_i128);
+        Ok(())
+    }
+
+    /// Admin: attach or remove the oracle aggregator used for swap deviation checks.
+    pub fn set_oracle(env: Env, admin: Address, oracle: Option<Address>) -> Result<(), AmmError> {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored_admin {
+            return Err(AmmError::Unauthorized);
+        }
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::OracleAggregator, &oracle);
+        Ok(())
+    }
+
+    /// Admin: max spot-vs-oracle deviation in basis points before swaps revert.
+    pub fn set_max_oracle_deviation_bps(
+        env: Env,
+        admin: Address,
+        max_deviation_bps: i128,
+    ) -> Result<(), AmmError> {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored_admin {
+            return Err(AmmError::Unauthorized);
+        }
+        admin.require_auth();
+        if !(0..=10_000).contains(&max_deviation_bps) {
+            return Err(AmmError::InvalidFeeBps);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxOracleDeviationBps, &max_deviation_bps);
         Ok(())
     }
 
@@ -578,6 +635,45 @@ impl AmmPool {
 
         Ok(())
     }
+
+    /// Revert when spot price deviates too far from the configured oracle (#318).
+    fn check_oracle_deviation(
+        env: &Env,
+        token_in: &Address,
+        token_out: &Address,
+        amount_in: i128,
+        amount_out: i128,
+    ) -> Result<(), AmmError> {
+        let oracle: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::OracleAggregator);
+        let Some(oracle_addr) = oracle else {
+            return Ok(());
+        };
+        let max_dev: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxOracleDeviationBps)
+            .unwrap_or(500);
+
+        let agg = OracleAggregatorClient::new(env, &oracle_addr)
+            .get_price_safe(token_in, token_out);
+        if agg.confidence == 0 || agg.price <= 0 {
+            return Ok(());
+        }
+
+        const PRICE_SCALE: i128 = 1_000_000;
+        let spot_price = amount_out * PRICE_SCALE / amount_in;
+        let oracle_price = agg.price;
+        let deviation_bps = if spot_price >= oracle_price {
+            (spot_price - oracle_price) * 10_000 / oracle_price
+        } else {
+            (oracle_price - spot_price) * 10_000 / oracle_price
+        };
+        if deviation_bps > max_dev {
+            return Err(AmmError::OracleDeviationExceeded);
+        }
         Ok(())
     }
 
@@ -1342,6 +1438,8 @@ impl AmmPool {
             return Err(AmmError::InsufficientLiquidity);
         }
 
+        Self::check_oracle_deviation(&env, &token_in, &token_out, amount_in, amount_out)?;
+
         // Transfer in.
         let client_in = SepTokenClient::new(&env, &token_in);
         client_in.transfer(&trader, &env.current_contract_address(), &amount_in);
@@ -1399,10 +1497,10 @@ impl AmmPool {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "swap"), trader),
-            (token_in, amount_in, token_out, amount_out),
+            (Symbol::new(&env, "swap"), trader.clone()),
+            (token_in.clone(), amount_in, token_out.clone(), amount_out),
         );
-        soroban_amm_sdk::emit_versioned_event!(env, (Symbol::new(&env, "swap"), trader), (token_in, amount_in, token_out, amount_out, referrer));
+        soroban_amm_sdk::emit_versioned_event!(env, (Symbol::new(&env, "swap"), trader), (token_in, amount_in, token_out, amount_out, None::<Address>));
 
         Ok(amount_out)
     }
@@ -1476,6 +1574,8 @@ impl AmmPool {
             return Err(AmmError::SlippageExceeded);
         }
 
+        Self::check_oracle_deviation(&env, &token_in, &token_out, amount_in, amount_out)?;
+
         // Transfer tokens.
         SepTokenClient::new(&env, &token_in).transfer(
             &trader,
@@ -1539,10 +1639,10 @@ impl AmmPool {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "swap"), trader),
-           (token_in, amount_in, token_out, amount_out),
+            (Symbol::new(&env, "swap"), trader.clone()),
+            (token_in.clone(), amount_in, token_out.clone(), amount_out),
         );
-        soroban_amm_sdk::emit_versioned_event!(env, (Symbol::new(&env, "swap"), trader), (token_in, amount_in, token_out, amount_out, referrer));
+        soroban_amm_sdk::emit_versioned_event!(env, (Symbol::new(&env, "swap"), trader), (token_in, amount_in, token_out, amount_out, None::<Address>));
 
         Ok(amount_in)
     }
@@ -2013,6 +2113,8 @@ impl AmmPool {
         if amount_out >= reserve_out {
             return Err(AmmError::InsufficientLiquidity);
         }
+
+        Self::check_oracle_deviation(&env, &token_in, &token_out, actual_received, amount_out)?;
 
         SepTokenClient::new(&env, &token_out).transfer(&pool, &trader, &amount_out);
 

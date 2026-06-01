@@ -22,6 +22,7 @@ name = "amm"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "soroban-amm-sdk",
  "soroban-sdk",
  "token",
 ]
@@ -112,6 +113,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "batch_auction"
+version = "0.1.0"
+dependencies = [
+ "amm",
+ "soroban-sdk",
+ "token",
+]
+
+[[package]]
 name = "batch_router"
 version = "0.1.0"
 dependencies = [
@@ -197,10 +207,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cl_position_nft"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "concentrated_liquidity"
 version = "0.1.0"
 dependencies = [
  "amm",
+ "soroban-amm-sdk",
  "soroban-sdk",
  "token",
 ]
@@ -487,6 +505,7 @@ dependencies = [
  "amm",
  "concentrated_liquidity",
  "governance",
+ "soroban-amm-sdk",
  "soroban-sdk",
  "token",
 ]
@@ -592,6 +611,7 @@ version = "0.1.0"
 dependencies = [
  "amm",
  "proptest",
+ "soroban-amm-sdk",
  "soroban-sdk",
  "token",
 ]
@@ -898,6 +918,13 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "oracle-aggregator"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
 
 [[package]]
 name = "p256"
@@ -1516,7 +1543,6 @@ dependencies = [
 name = "staking"
 version = "0.1.0"
 dependencies = [
- "amm",
  "soroban-sdk",
  "token",
 ]

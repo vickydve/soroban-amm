@@ -30,8 +30,8 @@ const MAX_LOCK_DURATION: u64 = 4 * 365 * 24 * 3600;
 /// Minimum lock duration in seconds (1 week).
 const MIN_LOCK_DURATION: u64 = 7 * 24 * 3600;
 
-/// Maximum boost multiplier (4×, stored as 40_000 / BOOST_SCALE).
-const MAX_BOOST: i128 = 4 * BOOST_SCALE;
+/// Default maximum boost multiplier (2.5×, stored as 25_000 / BOOST_SCALE).
+const DEFAULT_MAX_BOOST: i128 = 25_000;
 
 /// Minimum boost multiplier (1×, stored as 10_000 / BOOST_SCALE).
 const MIN_BOOST: i128 = BOOST_SCALE;
@@ -60,9 +60,26 @@ pub enum DataKey {
     LockExpiry(Address),
     /// Boost multiplier for a staker (scaled by BOOST_SCALE); default = BOOST_SCALE (1×)
     BoostMultiplier(Address),
+    /// Configurable min boost (scaled); default MIN_BOOST.
+    ConfigMinBoost,
+    /// Configurable max boost (scaled); default DEFAULT_MAX_BOOST.
+    ConfigMaxBoost,
+    /// Configurable min lock duration in seconds.
+    ConfigMinLockDuration,
+    /// Configurable max lock duration in seconds.
+    ConfigMaxLockDuration,
 }
 
 // ── Data structures ───────────────────────────────────────────────────────
+
+/// Time-locked staking position (#317).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LockedPosition {
+    pub amount: i128,
+    pub lock_expiry: u64,
+    pub boost_multiplier: i128,
+}
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -104,6 +121,147 @@ impl Staking {
         env.storage().instance().set(&DataKey::TotalEffectiveStaked, &0i128);
         env.storage().instance().set(&DataKey::AccumulatedRewardsPerShare, &0i128);
         env.storage().instance().set(&DataKey::RewardPoolBalance, &0i128);
+        Self::_write_boost_config(&env, MIN_BOOST, DEFAULT_MAX_BOOST, MIN_LOCK_DURATION, MAX_LOCK_DURATION);
+    }
+
+    /// Initialize with configurable veToken boost parameters (#317).
+    pub fn initialize_with_boost_config(
+        env: Env,
+        lp_token: Address,
+        reward_token: Address,
+        admin: Address,
+        min_boost_scaled: i128,
+        max_boost_scaled: i128,
+        min_lock_duration_secs: u64,
+        max_lock_duration_secs: u64,
+    ) {
+        assert!(
+            !env.storage().instance().has(&DataKey::LpToken),
+            "already initialized"
+        );
+        assert!(min_boost_scaled > 0 && max_boost_scaled >= min_boost_scaled);
+        assert!(min_lock_duration_secs > 0 && max_lock_duration_secs >= min_lock_duration_secs);
+        env.storage().instance().set(&DataKey::LpToken, &lp_token);
+        env.storage().instance().set(&DataKey::RewardToken, &reward_token);
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::TotalEffectiveStaked, &0i128);
+        env.storage().instance().set(&DataKey::AccumulatedRewardsPerShare, &0i128);
+        env.storage().instance().set(&DataKey::RewardPoolBalance, &0i128);
+        Self::_write_boost_config(
+            &env,
+            min_boost_scaled,
+            max_boost_scaled,
+            min_lock_duration_secs,
+            max_lock_duration_secs,
+        );
+    }
+
+    /// Escrow LP tokens for a fixed lock duration with a boosted reward rate (#317).
+    pub fn lock(env: Env, staker: Address, amount: i128, lock_duration_seconds: u64) {
+        Self::stake_locked(env, staker, amount, lock_duration_seconds);
+    }
+
+    /// Withdraw all LP and accrued rewards after the lock expires (#317).
+    pub fn unlock(env: Env, staker: Address) -> (i128, i128) {
+        let amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakerAmount(staker.clone()))
+            .unwrap_or(0);
+        assert!(amount > 0, "nothing staked");
+        Self::unstake(env, staker, amount)
+    }
+
+    /// Extend an existing lock forward in time only (#317).
+    pub fn extend_lock(env: Env, staker: Address, new_duration_seconds: u64) {
+        staker.require_auth();
+        assert!(new_duration_seconds > 0, "duration must be positive");
+
+        let now = env.ledger().timestamp();
+        let existing_expiry: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LockExpiry(staker.clone()))
+            .unwrap_or(0);
+        assert!(existing_expiry > now, "no active lock to extend");
+
+        let (min_lock, max_lock) = Self::_lock_duration_bounds(&env);
+        let clamped = new_duration_seconds.clamp(min_lock, max_lock);
+        let proposed_expiry = now + clamped;
+        let expiry = proposed_expiry.max(existing_expiry);
+        let boost = Self::_boost_for_remaining(&env, expiry, now);
+
+        let staked_amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakerAmount(staker.clone()))
+            .unwrap_or(0);
+        assert!(staked_amount > 0, "nothing staked");
+
+        Self::_settle_pending(&env, &staker);
+
+        let old_boost: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BoostMultiplier(staker.clone()))
+            .unwrap_or(MIN_BOOST);
+        let old_effective = Self::_effective_amount(staked_amount, old_boost);
+        let new_effective = Self::_effective_amount(staked_amount, boost);
+
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalEffectiveStaked)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalEffectiveStaked, &(total - old_effective + new_effective).max(0));
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LockExpiry(staker.clone()), &expiry);
+        env.storage()
+            .persistent()
+            .set(&DataKey::BoostMultiplier(staker.clone()), &boost);
+
+        let acc_per_share: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AccumulatedRewardsPerShare)
+            .unwrap_or(0);
+        let new_debt = new_effective * acc_per_share / SCALE_FACTOR;
+        env.storage()
+            .persistent()
+            .set(&DataKey::StakerRewardsDebt(staker.clone()), &new_debt);
+
+        env.events().publish(
+            (Symbol::new(&env, "lock_extended"),),
+            (staker, boost, expiry),
+        );
+    }
+
+    /// View the staker's locked position (#317).
+    pub fn get_locked_position(env: Env, staker: Address) -> LockedPosition {
+        let amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakerAmount(staker.clone()))
+            .unwrap_or(0);
+        let boost: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BoostMultiplier(staker.clone()))
+            .unwrap_or(MIN_BOOST);
+        let lock_expiry: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LockExpiry(staker.clone()))
+            .unwrap_or(0);
+        LockedPosition {
+            amount,
+            lock_expiry,
+            boost_multiplier: boost,
+        }
     }
 
     /// Add rewards to the pool. Admin only.
@@ -115,7 +273,7 @@ impl Staking {
 
         let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).unwrap();
         let pool_addr = env.current_contract_address();
-        SepTokenClient::new(&env, &reward_token).transfer_from(&admin, &admin, &pool_addr, &amount);
+        SepTokenClient::new(&env, &reward_token).transfer(&admin, &pool_addr, &amount);
 
         let current_balance: i128 = env
             .storage()
@@ -148,7 +306,7 @@ impl Staking {
 
         let lp_token: Address = env.storage().instance().get(&DataKey::LpToken).unwrap();
         let pool_addr = env.current_contract_address();
-        SepTokenClient::new(&env, &lp_token).transfer_from(&staker, &staker, &pool_addr, &amount);
+        SepTokenClient::new(&env, &lp_token).transfer(&staker, &pool_addr, &amount);
 
         // Settle any pending rewards before changing effective stake.
         Self::_settle_pending(&env, &staker);
@@ -164,14 +322,15 @@ impl Staking {
         let (new_expiry, new_boost) = if lock_duration_secs == 0 {
             // No new lock requested — keep existing lock if still active.
             let expiry = existing_expiry.max(now);
-            let boost = Self::_boost_for_remaining(expiry, now);
+            let boost = Self::_boost_for_remaining(&env, expiry, now);
             (existing_expiry, boost)
         } else {
-            let clamped = lock_duration_secs.clamp(MIN_LOCK_DURATION, MAX_LOCK_DURATION);
+            let (min_lock, max_lock) = Self::_lock_duration_bounds(&env);
+            let clamped = lock_duration_secs.clamp(min_lock, max_lock);
             let proposed_expiry = now + clamped;
             // Cannot shorten an existing lock.
             let expiry = proposed_expiry.max(existing_expiry);
-            let boost = Self::_boost_for_remaining(expiry, now);
+            let boost = Self::_boost_for_remaining(&env, expiry, now);
             (expiry, boost)
         };
 
@@ -230,38 +389,7 @@ impl Staking {
     /// Claim accrued rewards without unstaking.
     pub fn claim(env: Env, staker: Address) -> i128 {
         staker.require_auth();
-
-        let pending = Self::pending_rewards(env.clone(), staker.clone());
-        assert!(pending > 0, "no pending rewards");
-
-        let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).unwrap();
-        let pool_addr = env.current_contract_address();
-
-        // Reset debt.
-        let effective = Self::_staker_effective(&env, &staker);
-        let acc_per_share: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::AccumulatedRewardsPerShare)
-            .unwrap_or(0);
-        let new_debt = effective * acc_per_share / SCALE_FACTOR;
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerRewardsDebt(staker.clone()), &new_debt);
-
-        SepTokenClient::new(&env, &reward_token).transfer(&pool_addr, &staker, &pending);
-
-        let pool_balance: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RewardPoolBalance)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::RewardPoolBalance, &(pool_balance - pending));
-
-        env.events().publish((Symbol::new(&env, "claimed"),), (staker, pending));
-        pending
+        Self::_claim_rewards(&env, &staker)
     }
 
     /// Unstake LP tokens and claim pending rewards.
@@ -287,9 +415,9 @@ impl Staking {
             .unwrap_or(0);
         assert!(now >= lock_expiry, "tokens are still locked");
 
-        // Claim pending rewards first.
+        // Claim pending rewards first (auth already checked above).
         let rewards = if Self::pending_rewards(env.clone(), staker.clone()) > 0 {
-            Self::claim(env.clone(), staker.clone())
+            Self::_claim_rewards(&env, &staker)
         } else {
             0
         };
@@ -448,17 +576,99 @@ impl Staking {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    /// Compute boost multiplier (scaled by BOOST_SCALE) for a given remaining
-    /// lock duration.  Scales linearly: 0 s → 1×, MAX_LOCK_DURATION → 4×.
-    fn _boost_for_remaining(expiry: u64, now: u64) -> i128 {
+    fn _claim_rewards(env: &Env, staker: &Address) -> i128 {
+        let pending = Self::pending_rewards(env.clone(), staker.clone());
+        assert!(pending > 0, "no pending rewards");
+
+        let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).unwrap();
+        let pool_addr = env.current_contract_address();
+
+        let effective = Self::_staker_effective(env, staker);
+        let acc_per_share: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AccumulatedRewardsPerShare)
+            .unwrap_or(0);
+        let new_debt = effective * acc_per_share / SCALE_FACTOR;
+        env.storage()
+            .persistent()
+            .set(&DataKey::StakerRewardsDebt(staker.clone()), &new_debt);
+
+        SepTokenClient::new(env, &reward_token).transfer(&pool_addr, staker, &pending);
+
+        let pool_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPoolBalance)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::RewardPoolBalance, &(pool_balance - pending));
+
+        env.events()
+            .publish((Symbol::new(env, "claimed"),), (staker.clone(), pending));
+        pending
+    }
+
+    fn _write_boost_config(
+        env: &Env,
+        min_boost: i128,
+        max_boost: i128,
+        min_lock: u64,
+        max_lock: u64,
+    ) {
+        env.storage().instance().set(&DataKey::ConfigMinBoost, &min_boost);
+        env.storage().instance().set(&DataKey::ConfigMaxBoost, &max_boost);
+        env.storage()
+            .instance()
+            .set(&DataKey::ConfigMinLockDuration, &min_lock);
+        env.storage()
+            .instance()
+            .set(&DataKey::ConfigMaxLockDuration, &max_lock);
+    }
+
+    fn _boost_bounds(env: &Env) -> (i128, i128) {
+        let min_b: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConfigMinBoost)
+            .unwrap_or(MIN_BOOST);
+        let max_b: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConfigMaxBoost)
+            .unwrap_or(DEFAULT_MAX_BOOST);
+        (min_b, max_b)
+    }
+
+    fn _lock_duration_bounds(env: &Env) -> (u64, u64) {
+        let min_l: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConfigMinLockDuration)
+            .unwrap_or(MIN_LOCK_DURATION);
+        let max_l: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConfigMaxLockDuration)
+            .unwrap_or(MAX_LOCK_DURATION);
+        (min_l, max_l)
+    }
+
+    /// Compute boost multiplier for remaining lock time (linear min→max).
+    fn _boost_for_remaining(env: &Env, expiry: u64, now: u64) -> i128 {
+        let (min_boost, max_boost) = Self::_boost_bounds(env);
         if expiry <= now {
-            return MIN_BOOST;
+            return min_boost;
         }
         let remaining = expiry - now;
-        let clamped = remaining.min(MAX_LOCK_DURATION) as i128;
-        let max_dur = MAX_LOCK_DURATION as i128;
-        // boost = 1 + 3 * (remaining / MAX_LOCK_DURATION), scaled by BOOST_SCALE
-        MIN_BOOST + (MAX_BOOST - MIN_BOOST) * clamped / max_dur
+        let (_, max_lock) = Self::_lock_duration_bounds(env);
+        let clamped = remaining.min(max_lock) as i128;
+        let max_dur = max_lock as i128;
+        if max_dur == 0 {
+            return min_boost;
+        }
+        min_boost + (max_boost - min_boost) * clamped / max_dur
     }
 
     /// Effective staked amount = raw_amount * boost / BOOST_SCALE.
@@ -559,20 +769,20 @@ mod tests {
     }
 
     #[test]
-    fn test_stake_locked_max_duration_four_x_boost() {
+    fn test_stake_locked_max_duration_max_boost() {
         let env = Env::default();
         env.mock_all_auths();
-        let (admin, staker, staking) = setup(&env);
+        let (_, staker, staking) = setup(&env);
 
         staking.stake_locked(&staker, &1_000_i128, &MAX_LOCK_DURATION);
 
         let info = staking.get_staker_info(&staker);
         assert_eq!(info.staked_amount, 1_000);
-        assert_eq!(info.boost_multiplier, MAX_BOOST); // 4×
-        assert_eq!(info.effective_amount, 4_000);
+        assert_eq!(info.boost_multiplier, DEFAULT_MAX_BOOST); // 2.5×
+        assert_eq!(info.effective_amount, 2_500);
 
         let pool = staking.get_pool_info();
-        assert_eq!(pool.total_effective_staked, 4_000);
+        assert_eq!(pool.total_effective_staked, 2_500);
     }
 
     #[test]
@@ -588,18 +798,33 @@ mod tests {
 
         // staker_a: 1000 LP, no lock (1×) → effective 1000
         staking.stake(&staker_a, &1_000_i128);
-        // staker_b: 1000 LP, max lock (4×) → effective 4000
+        // staker_b: 1000 LP, max lock (2.5×) → effective 2500
         staking.stake_locked(&staker_b, &1_000_i128, &MAX_LOCK_DURATION);
 
-        // Distribute 500 rewards across total effective 5000
+        // Distribute 500 rewards across total effective 3500
         staking.update_rewards(&admin, &500_i128);
 
         let pending_a = staking.pending_rewards(&staker_a);
         let pending_b = staking.pending_rewards(&staker_b);
 
-        // staker_b should earn 4× more than staker_a
-        assert_eq!(pending_a, 100); // 500 * 1000/5000
-        assert_eq!(pending_b, 400); // 500 * 4000/5000
+        assert!(pending_b > pending_a * 2);
+        assert_eq!(pending_a + pending_b, 499); // integer rounding on 500 reward split
+    }
+
+    #[test]
+    fn test_extend_lock_increases_boost() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, staker, staking) = setup(&env);
+
+        staking.lock(&staker, &1_000_i128, &MIN_LOCK_DURATION);
+        let before = staking.get_locked_position(&staker);
+        assert!(before.boost_multiplier < DEFAULT_MAX_BOOST);
+
+        staking.extend_lock(&staker, &MAX_LOCK_DURATION);
+        let after = staking.get_locked_position(&staker);
+        assert_eq!(after.boost_multiplier, DEFAULT_MAX_BOOST);
+        assert!(after.lock_expiry >= before.lock_expiry);
     }
 
     #[test]

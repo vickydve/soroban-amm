@@ -202,9 +202,35 @@ impl OracleAggregator {
     /// `InsufficientSources` when fewer than `MIN_VALID_SOURCES`
     /// produced a positive price within the staleness window.
     pub fn get_price(env: Env, token_a: Address, token_b: Address) -> AggregatedPrice {
-        let sources = read_sources(&env);
-        if sources.len() == 0 {
+        let result = Self::aggregate_price(&env, token_a.clone(), token_b.clone(), true);
+        if result.confidence == 0 {
             panic_with_error!(&env, OracleError::InsufficientSources);
+        }
+        env.events().publish(
+            (symbol_short!("price"),),
+            (token_a, token_b, result.price, result.confidence),
+        );
+        result
+    }
+
+    /// Non-panicking price query for pool circuit breakers (#318).
+    /// Returns `confidence = 0` when all sources are stale or insufficient.
+    pub fn get_price_safe(env: Env, token_a: Address, token_b: Address) -> AggregatedPrice {
+        Self::aggregate_price(&env, token_a, token_b, false)
+    }
+
+    fn aggregate_price(
+        env: &Env,
+        token_a: Address,
+        token_b: Address,
+        persist_sources: bool,
+    ) -> AggregatedPrice {
+        let sources = read_sources(env);
+        if sources.len() == 0 {
+            return AggregatedPrice {
+                price: 0,
+                confidence: 0,
+            };
         }
 
         let now = env.ledger().timestamp();
@@ -214,21 +240,17 @@ impl OracleAggregator {
             .get(&DataKey::MaxStaleness)
             .unwrap_or(0);
 
-        let mut prices: Vec<i128> = Vec::new(&env);
-        let mut updated: Vec<OracleSource> = Vec::new(&env);
+        let mut prices: Vec<i128> = Vec::new(env);
+        let mut updated: Vec<OracleSource> = Vec::new(env);
 
         for i in 0..sources.len() {
             let mut source = sources.get_unchecked(i);
-            // Staleness gate. Sources that have produced a price
-            // before are checked against the freshness window. New
-            // sources (last_updated_at == 0) are always probed so the
-            // first call seeds them.
             let is_fresh = source.last_updated_at == 0
                 || now <= source.last_updated_at
                 || now - source.last_updated_at <= max_staleness;
 
             if is_fresh {
-                let client = OracleSourceAdapterClient::new(&env, &source.source_contract);
+                let client = OracleSourceAdapterClient::new(env, &source.source_contract);
                 let price = client.quote(&token_a, &token_b);
                 if price > 0 {
                     source.last_updated_at = now;
@@ -239,23 +261,21 @@ impl OracleAggregator {
         }
 
         if prices.len() < MIN_VALID_SOURCES {
-            panic_with_error!(&env, OracleError::InsufficientSources);
+            return AggregatedPrice {
+                price: 0,
+                confidence: 0,
+            };
         }
 
-        // Persist the refreshed last_updated_at timestamps so the next
-        // call's staleness gate is accurate.
-        env.storage().instance().set(&DataKey::Sources, &updated);
+        if persist_sources {
+            env.storage().instance().set(&DataKey::Sources, &updated);
+        }
 
-        let median = median_i128(&env, &prices);
-        let result = AggregatedPrice {
+        let median = median_i128(env, &prices);
+        AggregatedPrice {
             price: median,
             confidence: prices.len(),
-        };
-        env.events().publish(
-            (symbol_short!("price"),),
-            (token_a, token_b, result.price, result.confidence),
-        );
-        result
+        }
     }
 
     /// Read-only — list every source currently in the registry.

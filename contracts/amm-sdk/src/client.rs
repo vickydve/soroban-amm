@@ -118,14 +118,14 @@ pub trait AmmPoolInterface {
 /// }
 /// sdk.execute_swap(&trader, &token_a, 1_000_000, quote.amount_out * 99 / 100, deadline, None)?;
 /// ```
-pub struct AmmPoolSdk {
+pub struct AmmPoolSdk<'a> {
     env: Env,
-    client: AmmPoolClient,
+    client: AmmPoolClient<'a>,
 }
 
-impl AmmPoolSdk {
+impl<'a> AmmPoolSdk<'a> {
     /// Bind the SDK to a deployed pool at `pool_address`.
-    pub fn new(env: &Env, pool_address: &Address) -> Self {
+    pub fn new(env: &'a Env, pool_address: &Address) -> Self {
         Self {
             env: env.clone(),
             client: AmmPoolClient::new(env, pool_address),
@@ -153,7 +153,7 @@ impl AmmPoolSdk {
 
     /// LP share balance of `provider`.
     pub fn shares_of(&self, provider: &Address) -> i128 {
-        self.client.shares_of(provider.clone())
+        self.client.shares_of(provider)
     }
 
     /// Accrued protocol fees not yet withdrawn.  Returns `(fee_a, fee_b)`.
@@ -340,14 +340,14 @@ impl AmmPoolSdk {
         deadline: u64,
         referrer: Option<Address>,
     ) -> Result<i128, SdkAmmError> {
-        self.client.swap(
-            trader.clone(),
-            token_in.clone(),
-            amount_in,
-            min_out,
-            deadline,
-            referrer,
-        )
+        Ok(self.client.swap(
+            trader,
+            token_in,
+            &amount_in,
+            &min_out,
+            &deadline,
+            &referrer,
+        ))
     }
 
     /// Execute a swap targeting an exact output amount.
@@ -360,14 +360,14 @@ impl AmmPoolSdk {
         deadline: u64,
         referrer: Option<Address>,
     ) -> Result<i128, SdkAmmError> {
-        self.client.swap_exact_out(
-            trader.clone(),
-            token_out.clone(),
-            amount_out,
-            max_in,
-            deadline,
-            referrer,
-        )
+        Ok(self.client.swap_exact_out(
+            trader,
+            token_out,
+            &amount_out,
+            &max_in,
+            &deadline,
+            &referrer,
+        ))
     }
 
     /// Add liquidity to the pool.
@@ -379,13 +379,13 @@ impl AmmPoolSdk {
         min_shares: i128,
         deadline: u64,
     ) -> Result<i128, SdkAmmError> {
-        self.client.add_liquidity(
-            provider.clone(),
-            amount_a,
-            amount_b,
-            min_shares,
-            deadline,
-        )
+        Ok(self.client.add_liquidity(
+            provider,
+            &amount_a,
+            &amount_b,
+            &min_shares,
+            &deadline,
+        ))
     }
 
     /// Remove liquidity from the pool.
@@ -397,8 +397,13 @@ impl AmmPoolSdk {
         min_b: i128,
         deadline: u64,
     ) -> Result<(i128, i128), SdkAmmError> {
-        self.client
-            .remove_liquidity(provider.clone(), shares, min_a, min_b, deadline)
+        Ok(self.client.remove_liquidity(
+            provider,
+            &shares,
+            &min_a,
+            &min_b,
+            &deadline,
+        ))
     }
 
     /// Issue a flash loan.
@@ -409,8 +414,7 @@ impl AmmPoolSdk {
         amount: i128,
         data: Bytes,
     ) -> Result<i128, SdkAmmError> {
-        self.client
-            .flash_loan(receiver.clone(), token.clone(), amount, data)
+        Ok(self.client.flash_loan(receiver, token, &amount, &data))
     }
 }
 

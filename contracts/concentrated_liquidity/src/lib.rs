@@ -6,7 +6,8 @@ pub mod math;
 pub mod tick_bitmap;
 
 use soroban_sdk::{
-    contract, contractimpl, contracterror, contracttype, symbol_short, Address, Env, Vec,
+    contract, contractclient, contractimpl, contracterror, contracttype, symbol_short, Address,
+    Env, Vec,
 };
 use soroban_sdk::token::Client as TokenClient;
 
@@ -39,6 +40,7 @@ pub enum ClError {
     TickNotInitialized  = 15, // requested tick has no liquidity (never touched by a position)
     InvalidToken        = 16, // token_in is not token_a or token_b
     RangeOrderInRange   = 17, // range order must be fully out-of-range at creation
+    OracleDeviationExceeded = 18,
 }
 
 /// Status of a range order (issue #295).
@@ -89,6 +91,20 @@ pub enum DataKey {
     Paused,
     TickSpacing,              // i32 — only multiples of this value may be initialized as ticks
     RangeOrder(Address, i32, i32), // marks a position as a range order (issue #295)
+    OracleAggregator,
+    MaxOracleDeviationBps,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AggregatedPrice {
+    pub price: i128,
+    pub confidence: u32,
+}
+
+#[contractclient(name = "OracleAggregatorClient")]
+pub trait OracleAggregatorInterface {
+    fn get_price_safe(env: Env, token_a: Address, token_b: Address) -> AggregatedPrice;
 }
 
 #[contracttype]
@@ -199,6 +215,45 @@ impl ConcentratedLiquidity {
         env.storage().instance().set(&DataKey::TickCumulative, &0_i64);
         env.storage().instance().set(&DataKey::LastOracleTimestamp, &init_ts);
         env.storage().instance().set(&DataKey::OraclePoint(init_ts), &0_i64);
+        env.storage()
+            .instance()
+            .set(&DataKey::OracleAggregator, &Option::<Address>::None);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxOracleDeviationBps, &500_i128);
+        Ok(())
+    }
+
+    /// Admin: attach or remove the oracle aggregator for swap deviation checks (#318).
+    pub fn set_oracle(env: Env, admin: Address, oracle: Option<Address>) -> Result<(), ClError> {
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored {
+            return Err(ClError::Unauthorized);
+        }
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::OracleAggregator, &oracle);
+        Ok(())
+    }
+
+    /// Admin: max spot-vs-oracle deviation in basis points.
+    pub fn set_max_oracle_deviation_bps(
+        env: Env,
+        admin: Address,
+        max_deviation_bps: i128,
+    ) -> Result<(), ClError> {
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored {
+            return Err(ClError::Unauthorized);
+        }
+        admin.require_auth();
+        if !(0..=10_000).contains(&max_deviation_bps) {
+            return Err(ClError::InvalidFeeBps);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxOracleDeviationBps, &max_deviation_bps);
         Ok(())
     }
 
@@ -227,6 +282,45 @@ impl ConcentratedLiquidity {
     /// Returns true when the pool is paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+
+    fn check_oracle_deviation(
+        env: &Env,
+        token_in: &Address,
+        token_out: &Address,
+        amount_in: i128,
+        amount_out: i128,
+    ) -> Result<(), ClError> {
+        let oracle: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::OracleAggregator);
+        let Some(oracle_addr) = oracle else {
+            return Ok(());
+        };
+        let max_dev: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxOracleDeviationBps)
+            .unwrap_or(500);
+
+        let agg = OracleAggregatorClient::new(env, &oracle_addr)
+            .get_price_safe(token_in, token_out);
+        if agg.confidence == 0 || agg.price <= 0 {
+            return Ok(());
+        }
+
+        let spot_price = amount_out * PRICE_SCALE / amount_in;
+        let oracle_price = agg.price;
+        let deviation_bps = if spot_price >= oracle_price {
+            (spot_price - oracle_price) * 10_000 / oracle_price
+        } else {
+            (oracle_price - spot_price) * 10_000 / oracle_price
+        };
+        if deviation_bps > max_dev {
+            return Err(ClError::OracleDeviationExceeded);
+        }
+        Ok(())
     }
 
     pub fn mint_position(
@@ -1359,6 +1453,16 @@ impl ConcentratedLiquidity {
         } else {
             token_a.clone()
         };
+
+        if amount_in_actual > 0 && amount_out_total > 0 {
+            Self::check_oracle_deviation(
+                &env,
+                &token_in,
+                &token_out,
+                amount_in_actual,
+                amount_out_total,
+            )?;
+        }
 
         if amount_in_actual > 0 {
             TokenClient::new(&env, &token_in).transfer(
