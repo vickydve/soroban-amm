@@ -63,3 +63,43 @@ export interface BaseProps {
   /** Accessible label override. */
   "aria-label"?: string;
 }
+
+// ─── Governance types ─────────────────────────────────────────────────────────
+
+export type ProposalStatus = "active" | "passed" | "failed" | "pending";
+export type ProposalCategory = "protocol" | "treasury" | "params" | "meta" | "other";
+export type VoteChoice = "for" | "against" | "abstain";
+
+export interface OnChainAction {
+  contractId: string;
+  functionName: string;
+  /** Serialised JSON arguments. */
+  args: string;
+}
+
+export interface Proposal {
+  id: string;
+  title: string;
+  category: ProposalCategory;
+  status: ProposalStatus;
+  summary: string;
+  body: string;
+  forVotes: number;
+  againstVotes: number;
+  /** Minimum participation as % of circulating supply. */
+  quorumPct: number;
+  /** ISO date string (YYYY-MM-DD). */
+  created: string;
+  /** ISO date string (YYYY-MM-DD). */
+  ends: string;
+  author: string;
+  actions?: OnChainAction[];
+}
+
+export interface Delegate {
+  name: string;
+  address: string;
+  votingPower: string;
+  participationRate: string;
+  bio: string;
+}

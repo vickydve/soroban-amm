@@ -21,4 +21,15 @@ export type {
   RiskAssessment,
   RiskFactor,
   BaseProps,
+  // Governance
+  ProposalStatus,
+  ProposalCategory,
+  VoteChoice,
+  OnChainAction,
+  Proposal,
+  Delegate,
 } from "./types.js";
+
+export { GovernanceForum } from "./GovernanceForum.js";
+export type { GovernanceForumProps } from "./GovernanceForum.js";
+
