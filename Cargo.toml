@@ -20,6 +20,7 @@ members = [
   "contracts/integration-tests",
   "contracts/oracle_aggregator",
   "contracts/cl_position_nft",
+  "contracts/pol_vesting",
 ]
 
 [workspace.dependencies]

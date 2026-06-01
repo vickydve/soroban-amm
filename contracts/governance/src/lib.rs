@@ -184,6 +184,24 @@ pub struct UpdateProtocolFeeParams {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
+pub struct CreatePolVestingParams {
+    /// POL vesting contract address.
+    pub pol_vesting: Address,
+    /// Beneficiary of the vesting schedule.
+    pub beneficiary: Address,
+    /// LP token to vest.
+    pub lp_token: Address,
+    /// AMM pool the LP tokens belong to.
+    pub pool: Address,
+    /// Total LP tokens to vest.
+    pub total: i128,
+    pub start_ledger: u32,
+    pub cliff_ledger: u32,
+    pub end_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ProposalKind {
     UpdateFee(i128),
     UpdateFeeTier(i128),  // 0-3: VeryLow, Low, Medium, High
@@ -193,6 +211,8 @@ pub enum ProposalKind {
     PausePool,
     UnpausePool,
     EmergencyWithdraw(Address),
+    /// Deploy a time-based vesting schedule for protocol-owned LP tokens.
+    CreatePolVesting(CreatePolVestingParams),
 }
 
 #[contracttype]
@@ -246,6 +266,24 @@ pub trait AmmPoolInterface {
     fn unpause(env: Env);
     fn emergency_withdraw(env: Env, to: Address);
     fn propose_admin(env: Env, current_admin: Address, new_admin: Address);
+}
+
+// ── POL Vesting client ────────────────────────────────────────────────────────
+
+#[soroban_sdk::contractclient(name = "PolVestingClient")]
+pub trait PolVestingInterface {
+    #[allow(clippy::too_many_arguments)]
+    fn create_vesting(
+        env: Env,
+        governance: Address,
+        beneficiary: Address,
+        lp_token: Address,
+        pool: Address,
+        total: i128,
+        start_ledger: u32,
+        cliff_ledger: u32,
+        end_ledger: u32,
+    );
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -362,6 +400,7 @@ impl Governance {
             ProposalKind::TransferAdmin(_new_admin) => {}
             ProposalKind::PausePool => {}
             ProposalKind::UnpausePool => {}
+            ProposalKind::CreatePolVesting(_) => {}
         }
 
         let lp_token: Address = env.storage().instance().get(&DataKey::LpToken).unwrap();
@@ -595,6 +634,19 @@ impl Governance {
             },
             ProposalKind::EmergencyWithdraw(to) => {
                 amm_client.emergency_withdraw(to);
+            }
+            ProposalKind::CreatePolVesting(params) => {
+                let self_addr = env.current_contract_address();
+                PolVestingClient::new(&env, &params.pol_vesting).create_vesting(
+                    &self_addr,
+                    &params.beneficiary,
+                    &params.lp_token,
+                    &params.pool,
+                    &params.total,
+                    &params.start_ledger,
+                    &params.cliff_ledger,
+                    &params.end_ledger,
+                );
             }
         }
 
