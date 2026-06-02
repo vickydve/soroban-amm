@@ -652,7 +652,7 @@ impl Factory {
     /// - 1 → 5 bps (0.05%)
     /// - 2 → 30 bps (0.3%)
     /// - 3 → 100 bps (1.0%)
-    pub fn get_fee_tier_bps(env: Env, fee_tier: i128) -> Result<i128, FactoryError> {
+    pub fn get_fee_tier_bps(_env: Env, fee_tier: i128) -> Result<i128, FactoryError> {
         fee_tier_to_bps(fee_tier)
     }
 
@@ -727,7 +727,7 @@ impl Factory {
     ///
     /// Admin-only. This immediately propagates the configured rate to all
     /// factory-administered pools, making the factory their `fee_recipient` so
-    /// [`sweep_fees`] can permissionlessly collect and forward fees.
+    /// `sweep_fees` can permissionlessly collect and forward fees.
     ///
     /// Setting `global_protocol_fee_bps` to `0` disables fee collection on all
     /// factory-administered pools after this call completes.
@@ -875,7 +875,7 @@ impl Factory {
         Ok(total_collected)
     }
 
-    /// Paginated variant of [`sweep_fees`] for large pool registries.
+    /// Paginated variant of `sweep_fees` for large pool registries.
     pub fn sweep_fees_paginated(
         env: Env,
         token: Address,
@@ -902,7 +902,7 @@ impl Factory {
             .storage()
             .instance()
             .get(&DataKey::AllPools)
-            .unwrap_or_else(|| Vec::new(&env));
+            .unwrap_or_else(|| Vec::new(env));
 
         let len = all.len();
         let start = offset.min(len);
