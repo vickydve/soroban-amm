@@ -43,6 +43,9 @@ jobs:
       - name: Run all tests
         run: cargo test -p factory
 
+      - name: Run hot-path benchmarks
+        run: cargo run -p benches -- --check
+
       - name: Clippy
         run: cargo clippy -p factory --no-deps -- -D warnings
 
