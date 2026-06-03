@@ -119,7 +119,6 @@ pub trait AmmPoolInterface {
 /// sdk.execute_swap(&trader, &token_a, 1_000_000, quote.amount_out * 99 / 100, deadline, None)?;
 /// ```
 pub struct AmmPoolSdk<'a> {
-    env: Env,
     client: AmmPoolClient<'a>,
 }
 
@@ -127,7 +126,6 @@ impl<'a> AmmPoolSdk<'a> {
     /// Bind the SDK to a deployed pool at `pool_address`.
     pub fn new(env: &'a Env, pool_address: &Address) -> Self {
         Self {
-            env: env.clone(),
             client: AmmPoolClient::new(env, pool_address),
         }
     }

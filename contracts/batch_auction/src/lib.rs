@@ -212,7 +212,7 @@ impl BatchAuction {
 
         env.storage().instance().remove(&DataKey::Order(order_id));
 
-        let mut pending: Vec<u64> = env
+        let pending: Vec<u64> = env
             .storage()
             .instance()
             .get(&DataKey::PendingOrders)

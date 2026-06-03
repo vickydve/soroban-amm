@@ -16,7 +16,7 @@
 //! | `upgraded`      | `("upgraded",)`               | `(new_wasm_hash,)`                |
 //! | `circuit_break` | `("circuit_break",)`          | `(price_before, price_after, deviation_bps, threshold_bps)` |
 
-use soroban_sdk::{contracttype, Address, Bytes, BytesN};
+use soroban_sdk::{contracttype, Address, BytesN};
 
 // ── Event data types ──────────────────────────────────────────────────────────
 

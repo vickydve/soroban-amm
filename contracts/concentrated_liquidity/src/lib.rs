@@ -2163,7 +2163,6 @@ impl ConcentratedLiquidity {
         }
 
         if info.liquidity_gross == 0 {
-            info.initialized = false;
             Self::flip_tick(env, tick);
             env.storage().instance().remove(&DataKey::Tick(tick));
         } else {
