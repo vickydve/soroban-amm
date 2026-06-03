@@ -165,8 +165,8 @@ fn deploy_pool(env: &Env, fee_bps: i128) -> Pool<'_> {
     let token_hash = env.deployer().upload_contract_wasm(token_wasm::WASM);
 
     let admin = Address::generate(env);
-    let pool_addr = env.deployer().with_address(Address::generate(env), [0u8; 32].into()).deploy(amm_hash);
-    let lp_addr = env.deployer().with_address(Address::generate(env), [1u8; 32].into()).deploy(token_hash);
+    let pool_addr = env.deployer().with_address(Address::generate(env), soroban_sdk::BytesN::from_array(env, &[0u8; 32])).deploy(amm_hash);
+    let lp_addr = env.deployer().with_address(Address::generate(env), soroban_sdk::BytesN::from_array(env, &[1u8; 32])).deploy(token_hash);
 
     token_wasm::Client::new(env, &lp_addr).initialize(
         &pool_addr,
@@ -192,7 +192,7 @@ fn deploy_pool(env: &Env, fee_bps: i128) -> Pool<'_> {
     let provider = Address::generate(env);
     ta_sac.mint(&provider, &1_000_000_i128);
     tb_sac.mint(&provider, &1_000_000_i128);
-    client.add_liquidity(&provider, &1_000_000_i128, &1_000_000_i128, &0_i128);
+    client.add_liquidity(&provider, &1_000_000_i128, &1_000_000_i128, &0_i128, &u64::MAX);
 
     let ta_addr = ta.address.clone();
     let tb_addr = tb.address.clone();

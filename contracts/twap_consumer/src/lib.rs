@@ -391,7 +391,6 @@ mod tests {
             &1_000_000_i128,
             &0_i128,
             &10_060_u64,
-            &None,
         );
 
         let twap = consumer.get_twap_price(&amm_addr, &60_u64);
@@ -457,7 +456,6 @@ mod tests {
             &1_000_000_i128,
             &0_i128,
             &10_060_u64,
-            &None,
         );
 
         let (spot_a, _spot_b) = amm.price_ratio();
@@ -525,7 +523,6 @@ mod tests {
             &1_000_i128,
             &0_i128,
             &10_060_u64,
-            &None,
         );
 
         let (safe_spot, _spot_b) = amm.price_ratio();
@@ -605,7 +602,6 @@ mod tests {
             &1_000_i128,
             &0_i128,
             &10_060_u64,
-            &None,
         );
 
         let (twap_a_to_b, twap_b_to_a) = consumer.get_twap_both(&amm_addr, &60_u64);
@@ -671,7 +667,6 @@ mod tests {
             &1_000_i128,
             &0_i128,
             &10_060_u64,
-            &None,
         );
 
         let (twap_a_to_b, twap_b_to_a) = consumer.get_twap_both(&amm_addr, &60_u64);
@@ -770,7 +765,6 @@ mod tests {
             &1_000_i128,
             &0_i128,
             &10_060_u64,
-            &None,
         );
         let whale2 = Address::generate(&env);
         ta2_sac.mint(&whale2, &1_000_i128);
@@ -780,7 +774,6 @@ mod tests {
             &1_000_i128,
             &0_i128,
             &10_060_u64,
-            &None,
         );
 
         // get_twap_all must return TWAPs for both pools.
@@ -862,7 +855,6 @@ mod tests {
             &1_000_i128,
             &0_i128,
             &10_060_u64,
-            &None,
         );
         let price = consumer.get_twap_price(&amm_addr, &60_u64);
         assert_eq!(price, 1_000_000);

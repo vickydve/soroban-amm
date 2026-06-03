@@ -27,6 +27,7 @@ pub trait AmmPoolInterface {
 }
 
 /// Mirror of the PoolInfo struct exported by the AMM pool contract.
+/// Must match the AMM's field list exactly for cross-contract deserialization.
 #[contracttype]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PoolInfo {
@@ -37,6 +38,10 @@ pub struct PoolInfo {
     pub total_shares: i128,
     pub fee_bps: i128,
     pub flash_loan_fee_bps: i128,
+    pub admin: Address,
+    pub fee_recipient: Address,
+    pub protocol_fee_bps: i128,
+    pub lp_rebate_bps: i128,
 }
 
 /// Minimum reserve requirement for a token pair.
@@ -176,40 +181,13 @@ impl ReserveManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use amm::AmmPool;
     use soroban_sdk::{
         testutils::Address as _,
-        token::{StellarAssetClient, TokenClient as StellarTokenClient},
-        Env,
+        token::StellarAssetClient,
+        Env, String,
     };
-
-    mod amm_wasm {
-        soroban_sdk::contractimport!(
-            file = "../../target/wasm32-unknown-unknown/release/amm.wasm"
-        );
-    }
-
-    mod token_wasm {
-        soroban_sdk::contractimport!(
-            file = "../../target/wasm32-unknown-unknown/release/token.wasm"
-        );
-    }
-
-    mod factory_wasm {
-        soroban_sdk::contractimport!(
-            file = "../../target/wasm32-unknown-unknown/release/factory.wasm"
-        );
-    }
-
-    fn create_sac<'a>(
-        env: &'a Env,
-        admin: &Address,
-    ) -> (StellarTokenClient<'a>, StellarAssetClient<'a>) {
-        let contract = env.register_stellar_asset_contract_v2(admin.clone());
-        (
-            StellarTokenClient::new(env, &contract.address()),
-            StellarAssetClient::new(env, &contract.address()),
-        )
-    }
+    use token::{LpToken, LpTokenClient};
 
     struct Setup {
         env: Env,
@@ -223,30 +201,34 @@ mod tests {
     fn setup() -> Setup {
         let env = Env::default();
         env.mock_all_auths();
-        env.ledger().set_timestamp(1000);
 
         let admin = Address::generate(&env);
         let governance = Address::generate(&env);
 
-        let amm_hash = env.deployer().upload_contract_wasm(amm_wasm::WASM);
-        let token_hash = env.deployer().upload_contract_wasm(token_wasm::WASM);
+        // Deploy token pair.
+        let ta = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let tb = env.register_stellar_asset_contract_v2(admin.clone()).address();
 
-        let factory_addr = env.register_contract(None, factory_wasm::Factory);
-        let factory = factory_wasm::FactoryClient::new(&env, &factory_addr);
-        factory.initialize(&admin, &amm_hash, &token_hash);
-
-        let (ta_client, ta_sac) = create_sac(&env, &admin);
-        let (tb_client, tb_sac) = create_sac(&env, &admin);
-
-        let pool = factory.create_pool(&ta_client.address, &tb_client.address, &30_i128);
+        // Deploy AMM pool directly (native — avoids WASM serialization mismatches).
+        let lp_addr = env.register_contract(None, LpToken);
+        let pool_addr = env.register_contract(None, AmmPool);
+        LpTokenClient::new(&env, &lp_addr).initialize(
+            &pool_addr,
+            &String::from_str(&env, "LP"),
+            &String::from_str(&env, "LP"),
+            &7u32,
+        );
+        amm::AmmPoolClient::new(&env, &pool_addr)
+            .initialize(&admin, &ta, &tb, &lp_addr, &30_i128, &admin, &0_i128);
 
         let provider = Address::generate(&env);
-        ta_sac.mint(&provider, &1_000_000_i128);
-        tb_sac.mint(&provider, &1_000_000_i128);
+        StellarAssetClient::new(&env, &ta).mint(&provider, &1_000_000_i128);
+        StellarAssetClient::new(&env, &tb).mint(&provider, &1_000_000_i128);
+        amm::AmmPoolClient::new(&env, &pool_addr)
+            .add_liquidity(&provider, &1_000_000_i128, &1_000_000_i128, &0_i128, &u64::MAX);
 
-        let amm = amm_wasm::Client::new(&env, &pool);
-        amm.add_liquidity(&provider, &1_000_000_i128, &1_000_000_i128, &0_i128);
-
+        // factory_addr is not used in check_reserves, just needed for initialize.
+        let factory_addr = Address::generate(&env);
         let rm_addr = env.register_contract(None, ReserveManager);
         ReserveManagerClient::new(&env, &rm_addr)
             .initialize(&governance, &factory_addr);
@@ -254,9 +236,9 @@ mod tests {
         Setup {
             env,
             rm_addr,
-            pool,
-            ta: ta_client.address,
-            tb: tb_client.address,
+            pool: pool_addr,
+            ta,
+            tb,
             governance,
         }
     }

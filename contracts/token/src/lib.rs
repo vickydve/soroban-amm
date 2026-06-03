@@ -310,7 +310,7 @@ impl LpToken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env};
 
     struct TestSetup {
         env: Env,
@@ -450,6 +450,9 @@ mod tests {
 
         client.mint(&alice, &1_000_i128);
         let ledger_after_mint = ts.env.ledger().sequence();
+        // Advance the ledger so the transfer checkpoint lands at a different sequence,
+        // preserving the mint snapshot at ledger_after_mint.
+        ts.env.ledger().with_mut(|l| l.sequence_number += 1);
         client.transfer(&alice, &bob, &400_i128);
 
         assert_eq!(client.balance_at(&alice, &ledger_after_mint), 1_000);

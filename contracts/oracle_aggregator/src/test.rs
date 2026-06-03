@@ -191,7 +191,8 @@ fn get_price_returns_two_way_median_average() {
 #[test]
 fn stale_source_excluded_after_window() {
     let env = Env::default();
-    let h = deploy(&env, 60);
+    // Use max_staleness=600 so the 200s advance doesn't expire s1 or s3.
+    let h = deploy(&env, 600);
     let s1 = deploy_source(&env, 100);
     let s2 = deploy_source(&env, 110);
     let s3 = deploy_source(&env, 150);
@@ -209,11 +210,11 @@ fn stale_source_excluded_after_window() {
     let s2_client = MockAdapterClient::new(&env, &s2);
     s2_client.set_price(&0);
 
-    // Advance the clock past the staleness window for source-2.
+    // Advance the clock; s1 and s3 last reported at t=1000, 200s ago, still within 600s window.
     set_now(&env, 1_000 + 200);
 
     let result = h.aggregator.get_price(&h.token_a, &h.token_b);
-    // s2 fresh-gated out (price=0 → not counted); s1 + s3 remain.
+    // s2 excluded (price=0 → not counted); s1 + s3 remain.
     // Median of (100, 150) = 125.
     assert_eq!(result.price, 125);
     assert_eq!(result.confidence, 2);

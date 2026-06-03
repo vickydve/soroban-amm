@@ -429,8 +429,7 @@ mod tests {
         AmmPoolClient::new(env, &amm_addr)
             .initialize(
                 &amm_addr, token_a, token_b, &lp_addr, &30_i128, &amm_addr, &0_i128,
-            )
-            .unwrap();
+            );
         amm_addr
     }
 
@@ -452,8 +451,6 @@ mod tests {
             &1_000_000_i128,
             &1_000_000_i128,
             &0_i128,
-            &0_i128,
-            &0_i128,
             &u64::MAX,
         );
         (ta, tb, pool, admin)
@@ -462,29 +459,26 @@ mod tests {
     #[test]
     fn test_submit_and_settle() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         env.ledger().set_timestamp(1000);
 
         let (ta, tb, pool, admin) = setup(&env);
 
         let auction_addr = env.register_contract(None, BatchAuction);
         BatchAuctionClient::new(&env, &auction_addr)
-            .initialize(&admin, &30_u64)
-            .unwrap();
+            .initialize(&admin, &30_u64);
 
         let trader = Address::generate(&env);
         StellarAssetClient::new(&env, &ta).mint(&trader, &100_000_i128);
 
         BatchAuctionClient::new(&env, &auction_addr)
-            .submit_order(&trader, &pool, &ta, &tb, &10_000_i128, &0_i128, &u64::MAX)
-            .unwrap();
+            .submit_order(&trader, &pool, &ta, &tb, &10_000_i128, &0_i128, &u64::MAX);
 
         // Advance past the batch window.
         env.ledger().set_timestamp(1031);
 
         let results = BatchAuctionClient::new(&env, &auction_addr)
-            .settle_batch()
-            .unwrap();
+            .settle_batch();
 
         assert_eq!(results.len(), 1);
         assert!(results.get(0).unwrap() > 0);
@@ -497,30 +491,27 @@ mod tests {
     #[test]
     fn test_cancel_order_refunds_tokens() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         env.ledger().set_timestamp(1000);
 
         let (ta, tb, pool, admin) = setup(&env);
 
         let auction_addr = env.register_contract(None, BatchAuction);
         BatchAuctionClient::new(&env, &auction_addr)
-            .initialize(&admin, &30_u64)
-            .unwrap();
+            .initialize(&admin, &30_u64);
 
         let trader = Address::generate(&env);
         StellarAssetClient::new(&env, &ta).mint(&trader, &100_000_i128);
 
         let order_id = BatchAuctionClient::new(&env, &auction_addr)
-            .submit_order(&trader, &pool, &ta, &tb, &10_000_i128, &0_i128, &u64::MAX)
-            .unwrap();
+            .submit_order(&trader, &pool, &ta, &tb, &10_000_i128, &0_i128, &u64::MAX);
 
         // Tokens were escrowed — trader's balance decreased.
         let balance_after_submit = StellarTokenClient::new(&env, &ta).balance(&trader);
         assert_eq!(balance_after_submit, 90_000_i128);
 
         BatchAuctionClient::new(&env, &auction_addr)
-            .cancel_order(&trader, &order_id)
-            .unwrap();
+            .cancel_order(&trader, &order_id);
 
         // Tokens returned after cancel.
         let balance_after_cancel = StellarTokenClient::new(&env, &ta).balance(&trader);
@@ -533,21 +524,19 @@ mod tests {
     #[test]
     fn test_settle_before_window_reverts() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         env.ledger().set_timestamp(1000);
 
         let (ta, tb, pool, admin) = setup(&env);
 
         let auction_addr = env.register_contract(None, BatchAuction);
         BatchAuctionClient::new(&env, &auction_addr)
-            .initialize(&admin, &30_u64)
-            .unwrap();
+            .initialize(&admin, &30_u64);
 
         let trader = Address::generate(&env);
         StellarAssetClient::new(&env, &ta).mint(&trader, &100_000_i128);
         BatchAuctionClient::new(&env, &auction_addr)
-            .submit_order(&trader, &pool, &ta, &tb, &10_000_i128, &0_i128, &u64::MAX)
-            .unwrap();
+            .submit_order(&trader, &pool, &ta, &tb, &10_000_i128, &0_i128, &u64::MAX);
 
         // Window has not elapsed — should return BatchWindowOpen error.
         let result = BatchAuctionClient::new(&env, &auction_addr).try_settle_batch();
@@ -557,15 +546,14 @@ mod tests {
     #[test]
     fn test_multiple_traders_in_same_batch() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         env.ledger().set_timestamp(1000);
 
         let (ta, tb, pool, admin) = setup(&env);
 
         let auction_addr = env.register_contract(None, BatchAuction);
         BatchAuctionClient::new(&env, &auction_addr)
-            .initialize(&admin, &60_u64)
-            .unwrap();
+            .initialize(&admin, &60_u64);
 
         let trader1 = Address::generate(&env);
         let trader2 = Address::generate(&env);
@@ -573,17 +561,14 @@ mod tests {
         StellarAssetClient::new(&env, &ta).mint(&trader2, &50_000_i128);
 
         BatchAuctionClient::new(&env, &auction_addr)
-            .submit_order(&trader1, &pool, &ta, &tb, &5_000_i128, &0_i128, &u64::MAX)
-            .unwrap();
+            .submit_order(&trader1, &pool, &ta, &tb, &5_000_i128, &0_i128, &u64::MAX);
         BatchAuctionClient::new(&env, &auction_addr)
-            .submit_order(&trader2, &pool, &ta, &tb, &5_000_i128, &0_i128, &u64::MAX)
-            .unwrap();
+            .submit_order(&trader2, &pool, &ta, &tb, &5_000_i128, &0_i128, &u64::MAX);
 
         env.ledger().set_timestamp(1061);
 
         let results = BatchAuctionClient::new(&env, &auction_addr)
-            .settle_batch()
-            .unwrap();
+            .settle_batch();
 
         assert_eq!(results.len(), 2);
         assert!(results.get(0).unwrap() > 0);
@@ -597,25 +582,23 @@ mod tests {
     #[test]
     fn test_submit_beyond_cap_returns_batch_full() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         env.ledger().set_timestamp(1000);
 
         let (ta, tb, pool, admin) = setup(&env);
 
         let auction_addr = env.register_contract(None, BatchAuction);
         let client = BatchAuctionClient::new(&env, &auction_addr);
-        client.initialize(&admin, &60_u64).unwrap();
-        client.set_max_orders(&admin, &2_u32).unwrap();
+        client.initialize(&admin, &60_u64);
+        client.set_max_orders(&admin, &2_u32);
 
         let trader = Address::generate(&env);
         StellarAssetClient::new(&env, &ta).mint(&trader, &10_000_i128);
 
         client
-            .submit_order(&trader, &pool, &ta, &tb, &1_000_i128, &0_i128, &u64::MAX)
-            .unwrap();
+            .submit_order(&trader, &pool, &ta, &tb, &1_000_i128, &0_i128, &u64::MAX);
         client
-            .submit_order(&trader, &pool, &ta, &tb, &1_000_i128, &0_i128, &u64::MAX)
-            .unwrap();
+            .submit_order(&trader, &pool, &ta, &tb, &1_000_i128, &0_i128, &u64::MAX);
 
         let result =
             client.try_submit_order(&trader, &pool, &ta, &tb, &1_000_i128, &0_i128, &u64::MAX);
@@ -634,28 +617,27 @@ mod tests {
     #[test]
     fn test_settlement_with_exactly_max_orders_succeeds() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         env.ledger().set_timestamp(1000);
 
         let (ta, tb, pool, admin) = setup(&env);
 
         let auction_addr = env.register_contract(None, BatchAuction);
         let client = BatchAuctionClient::new(&env, &auction_addr);
-        client.initialize(&admin, &30_u64).unwrap();
-        client.set_max_orders(&admin, &3_u32).unwrap();
+        client.initialize(&admin, &30_u64);
+        client.set_max_orders(&admin, &3_u32);
 
         let trader = Address::generate(&env);
         StellarAssetClient::new(&env, &ta).mint(&trader, &10_000_i128);
 
         for _ in 0..3 {
             client
-                .submit_order(&trader, &pool, &ta, &tb, &1_000_i128, &0_i128, &u64::MAX)
-                .unwrap();
+                .submit_order(&trader, &pool, &ta, &tb, &1_000_i128, &0_i128, &u64::MAX);
         }
 
         env.ledger().set_timestamp(1031);
 
-        let results = client.settle_batch().unwrap();
+        let results = client.settle_batch();
         assert_eq!(results.len(), 3);
         for i in 0..results.len() {
             assert!(results.get(i).unwrap() > 0);

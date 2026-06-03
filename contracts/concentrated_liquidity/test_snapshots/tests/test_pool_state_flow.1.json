@@ -682,12 +682,24 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "Admin"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "CurrentTick"
                             }
                           ]
                         },
                         "val": {
-                          "i32": -300
+                          "i32": -101
                         }
                       },
                       {
@@ -751,6 +763,31 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "MaxOracleDeviationBps"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 500
+                          }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "OracleAggregator"
+                            }
+                          ]
+                        },
+                        "val": "void"
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "OraclePoint"
                             },
                             {
@@ -760,6 +797,18 @@
                         },
                         "val": {
                           "i64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Paused"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
                         }
                       },
                       {
@@ -862,14 +911,36 @@
                             },
                             {
                               "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "vec": [
+                                {
+                                  "i32": -100
+                                },
+                                {
+                                  "i32": 100
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "SqrtPriceX96"
                             }
                           ]
                         },
                         "val": {
                           "u128": {
-                            "hi": 4230542786,
-                            "lo": 10330176681277348904
+                            "hi": 4273492459,
+                            "lo": 9592306918328966840
                           }
                         }
                       },
@@ -885,16 +956,6 @@
                           ]
                         },
                         "val": {
-                          "vec": [
-                            {
-                              "vec": [
-                                {
-                                  "i32": -100
-                                },
-                                {
-                                  "i32": 100
-                                }
-                              ]
                           "map": [
                             {
                               "key": {
@@ -916,6 +977,14 @@
                                   "hi": 0,
                                   "lo": 0
                                 }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "initialized"
+                              },
+                              "val": {
+                                "bool": true
                               }
                             },
                             {
@@ -980,6 +1049,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "initialized"
+                              },
+                              "val": {
+                                "bool": true
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "liquidity_gross"
                               },
                               "val": {
@@ -1007,7 +1084,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "TickCumulative"
                               "symbol": "TickBitmap"
                             },
                             {
@@ -1034,11 +1110,34 @@
                           ]
                         },
                         "val": {
-                          "i64": 0
                           "u128": {
                             "hi": 68719476736,
                             "lo": 0
                           }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TickCumulative"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TickSpacing"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i32": 1
                         }
                       },
                       {
@@ -1876,6 +1975,9 @@
             "data": {
               "vec": [
                 {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                },
+                {
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                 },
                 {
@@ -1889,6 +1991,9 @@
                 },
                 {
                   "i32": 0
+                },
+                {
+                  "i32": 1
                 }
               ]
             }
@@ -2344,6 +2449,14 @@
                       "lo": 0
                     }
                   }
+                },
+                {
+                  "key": {
+                    "symbol": "tick_spacing"
+                  },
+                  "val": {
+                    "i32": 1
+                  }
                 }
               ]
             }
@@ -2614,28 +2727,35 @@
             "data": {
               "vec": [
                 {
-                  "i32": -100
+                  "u32": 1
                 },
                 {
-                  "i32": 100
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 4975
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 5024
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 4975
-                  }
+                  "vec": [
+                    {
+                      "i32": -100
+                    },
+                    {
+                      "i32": 100
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 4975
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 5024
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 4975
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -2749,6 +2869,14 @@
                       "hi": 4294967296,
                       "lo": 0
                     }
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "tick_spacing"
+                  },
+                  "val": {
+                    "i32": 1
                   }
                 }
               ]
@@ -3014,28 +3142,35 @@
             "data": {
               "vec": [
                 {
-                  "bool": true
+                  "u32": 1
                 },
                 {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 1000
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 29
-                  }
-                },
-                {
-                  "u128": {
-                    "hi": 4230542786,
-                    "lo": 10330176681277348904
-                  }
-                },
-                {
-                  "i32": -300
+                  "vec": [
+                    {
+                      "bool": true
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 1000
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 29
+                      }
+                    },
+                    {
+                      "u128": {
+                        "hi": 4273492459,
+                        "lo": 9592306918328966840
+                      }
+                    },
+                    {
+                      "i32": -101
+                    }
+                  ]
                 }
               ]
             }
@@ -3127,7 +3262,7 @@
                     "symbol": "current_tick"
                   },
                   "val": {
-                    "i32": -300
+                    "i32": -101
                   }
                 },
                 {
@@ -3136,9 +3271,17 @@
                   },
                   "val": {
                     "u128": {
-                      "hi": 4230542786,
-                      "lo": 10330176681277348904
+                      "hi": 4273492459,
+                      "lo": 9592306918328966840
                     }
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "tick_spacing"
+                  },
+                  "val": {
+                    "i32": 1
                   }
                 }
               ]

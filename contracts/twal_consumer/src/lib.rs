@@ -209,8 +209,7 @@ mod tests {
                 &30_i128,
                 &admin,
                 &0_i128,
-            )
-            .unwrap();
+            );
 
         let provider = Address::generate(&env);
         ta_sac.mint(&provider, &1_000_000_i128);
@@ -220,29 +219,31 @@ mod tests {
             &1_000_000_i128,
             &1_000_000_i128,
             &0_i128,
-            &0_i128,
-            &0_i128,
             &u64::MAX,
-        )
-        .unwrap();
+        );
 
         let consumer = TwalConsumerClient::new(&env, &consumer_addr);
         consumer.save_snapshot(&amm_addr);
 
         env.ledger().with_mut(|l| l.timestamp = 10_600);
+        // Mint additional tokens for the second deposit.
+        ta_sac.mint(&provider, &200_000_i128);
+        tb_sac.mint(&provider, &200_000_i128);
         AmmPoolClient::new(&env, &amm_addr).add_liquidity(
             &provider,
             &100_000_i128,
             &100_000_i128,
             &0_i128,
-            &0_i128,
-            &0_i128,
             &u64::MAX,
-        )
-        .unwrap();
+        );
         consumer.save_snapshot(&amm_addr);
 
         env.ledger().with_mut(|l| l.timestamp = 11_200);
+        // Trigger a pool interaction so checkpoint_twal advances pool_ts to 11_200.
+        let trader = Address::generate(&env);
+        ta_sac.mint(&trader, &1_000_i128);
+        AmmPoolClient::new(&env, &amm_addr).swap(&trader, &ta.address, &1_000_i128, &0_i128, &u64::MAX);
+
         let twal = consumer.get_twal_liquidity(&amm_addr, &600);
         assert!(twal > 0);
     }

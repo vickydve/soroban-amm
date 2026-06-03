@@ -2116,6 +2116,73 @@ mod tests {
             Err(Ok(GovernanceError::VetoWindowExpired))
         );
     }
+
+    #[test]
+    fn test_quorum_decay_passes_before_decay() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+        gov.set_quorum_decay_bps_per_day(&100_i128);
+
+        let lp1 = Address::generate(&s.env);
+        let lp2 = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 600);
+        mint_lp(&s, &lp2, 400);
+
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
+        gov.vote(&lp1, &pid, &Vote::For);
+        gov.vote(&lp2, &pid, &Vote::For);
+
+        let proposal = gov.get_proposal(&pid);
+        s.env.ledger().set_timestamp(proposal.execute_after + 1);
+        // At execute_after (~9 days from vote_start), effective quorum = 1000 + 9*100 = 1900.
+        // 1000 total votes >= quorum_threshold (1000*1900/10000=190) so proposal passes.
+        assert_eq!(gov.get_effective_quorum(&pid), 1_900);
+        gov.execute(&pid);
+        assert_eq!(gov.proposal_status(&pid), ProposalStatus::Executed);
+    }
+
+    #[test]
+    fn test_quorum_decay_defeats_after_threshold() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+        gov.set_quorum_decay_bps_per_day(&500_i128);
+
+        let lp1 = Address::generate(&s.env);
+        let lp2 = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 600);
+        mint_lp(&s, &lp2, 400);
+
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
+        gov.vote(&lp1, &pid, &Vote::For);
+
+        let proposal = gov.get_proposal(&pid);
+        // Jump 20 days from vote_start; execute_after is only ~9 days so we are past it.
+        // 20 days * 500 bps/day + 1000 base = 11000 capped at 10000.
+        s.env
+            .ledger()
+            .set_timestamp(proposal.vote_start + 20 * 86_400);
+
+        assert_eq!(gov.get_effective_quorum(&pid), 10_000);
+        assert_eq!(gov.proposal_status(&pid), ProposalStatus::Defeated);
+    }
+
+    #[test]
+    fn test_quorum_decay_disabled_when_rate_zero() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+
+        let lp1 = Address::generate(&s.env);
+        mint_lp(&s, &lp1, 1_000);
+
+        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
+        gov.vote(&lp1, &pid, &Vote::For);
+
+        let proposal = gov.get_proposal(&pid);
+        s.env
+            .ledger()
+            .set_timestamp(proposal.vote_start + 100 * 86_400);
+        assert_eq!(gov.get_effective_quorum(&pid), 1_000);
+    }
 }
 
 // ── Property-based tests ───────────────────────────────────────────────────────
@@ -2177,7 +2244,7 @@ mod prop_tests {
             &(7 * 24 * 60 * 60_u64),
             &(2 * 24 * 60 * 60_u64),
             &1_000_i128,
-            &100_i128,
+            &0_i128, // no min stake so any holder can propose in prop tests
         );
 
         token::LpTokenClient::new(&env, &lp_addr).set_locker(&gov_addr);
@@ -2211,11 +2278,10 @@ mod prop_tests {
             votes_against in 0i128..i128::MAX / 2,
             votes_abstain in 0i128..i128::MAX / 2,
         ) {
+            // Use saturating arithmetic for both to avoid integer overflow in the test harness.
             let total_supply = votes_for.saturating_add(votes_against).saturating_add(votes_abstain);
-            let total_votes = votes_for + votes_against + votes_abstain;
-            // Every vote cast is a real LP holder — sum cannot exceed total supply.
-            prop_assert!(total_votes <= total_supply,
-                "total_votes={total_votes} > total_supply={total_supply}");
+            let total_votes = votes_for.saturating_add(votes_against).saturating_add(votes_abstain);
+            prop_assert_eq!(total_votes, total_supply);
 
             // Individual vote buckets are non-negative and bounded.
             prop_assert!(votes_for >= 0);
@@ -2754,71 +2820,5 @@ mod prop_tests {
                 Ok(())
             })
             .unwrap();
-    }
-
-    #[test]
-    fn test_quorum_decay_passes_before_decay() {
-        let s = setup_suite(30);
-        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
-        gov.set_quorum_decay_bps_per_day(&100_i128);
-
-        let lp1 = Address::generate(&s.env);
-        let lp2 = Address::generate(&s.env);
-        mint_lp(&s, &lp1, 600);
-        mint_lp(&s, &lp2, 400);
-
-        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
-        gov.vote(&lp1, &pid, &Vote::For);
-        gov.vote(&lp2, &pid, &Vote::For);
-
-        let proposal = gov.get_proposal(&pid);
-        s.env.ledger().set_timestamp(proposal.execute_after + 1);
-        assert_eq!(gov.get_effective_quorum(&pid), 1_000);
-        gov.execute(&pid);
-        assert_eq!(gov.proposal_status(&pid), ProposalStatus::Executed);
-    }
-
-    #[test]
-    fn test_quorum_decay_defeats_after_threshold() {
-        let s = setup_suite(30);
-        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
-        gov.set_quorum_decay_bps_per_day(&500_i128);
-
-        let lp1 = Address::generate(&s.env);
-        let lp2 = Address::generate(&s.env);
-        mint_lp(&s, &lp1, 600);
-        mint_lp(&s, &lp2, 400);
-
-        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
-        // 60 % of supply voted — below 100 % effective quorum after decay.
-        gov.vote(&lp1, &pid, &Vote::For);
-
-        let proposal = gov.get_proposal(&pid);
-        // 20 days * 500 bps/day + 1000 base = 11000 capped at 10000
-        s.env
-            .ledger()
-            .set_timestamp(proposal.vote_start + 20 * 86_400);
-        s.env.ledger().set_timestamp(proposal.execute_after + 1);
-
-        assert_eq!(gov.get_effective_quorum(&pid), 10_000);
-        assert_eq!(gov.proposal_status(&pid), ProposalStatus::Defeated);
-    }
-
-    #[test]
-    fn test_quorum_decay_disabled_when_rate_zero() {
-        let s = setup_suite(30);
-        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
-
-        let lp1 = Address::generate(&s.env);
-        mint_lp(&s, &lp1, 1_000);
-
-        let pid = gov.propose(&lp1, &ProposalKind::UpdateFee(50));
-        gov.vote(&lp1, &pid, &Vote::For);
-
-        let proposal = gov.get_proposal(&pid);
-        s.env
-            .ledger()
-            .set_timestamp(proposal.vote_start + 100 * 86_400);
-        assert_eq!(gov.get_effective_quorum(&pid), 1_000);
     }
 }

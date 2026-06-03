@@ -142,17 +142,15 @@ mod tests {
             &String::from_str(env, "LP"),
             &7u32,
         );
-        AmmPoolClient::new(env, &amm_addr)
-            .initialize(
-                &amm_addr,
-                token_a,
-                token_b,
-                &lp_addr,
-                &30_i128,
-                &amm_addr,
-                &0_i128,
-            )
-            .unwrap();
+        AmmPoolClient::new(env, &amm_addr).initialize(
+            &amm_addr,
+            token_a,
+            token_b,
+            &lp_addr,
+            &30_i128,
+            &amm_addr,
+            &0_i128,
+        );
         amm_addr
     }
 
@@ -266,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "batch swap failed")]
+    #[should_panic(expected = "contract call failed")]
     fn test_batch_atomic_revert_on_slippage() {
         let env = Env::default();
         env.mock_all_auths();

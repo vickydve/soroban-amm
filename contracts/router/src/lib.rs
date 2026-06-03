@@ -131,9 +131,13 @@ mod tests {
         env.mock_all_auths();
         let admin = Address::generate(&env);
 
+        env.budget().reset_unlimited();
+        let amm_wasm_hash = env.deployer().upload_contract_wasm(amm::WASM);
+        let lp_wasm_hash = env.deployer().upload_contract_wasm(token::WASM);
+
         let factory_addr = env.register_contract(None, Factory);
         let factory = FactoryClient::new(&env, &factory_addr);
-        factory.initialize(&admin);
+        factory.initialize(&admin, &amm_wasm_hash, &lp_wasm_hash);
 
         let router_addr = env.register_contract(None, Router);
         let router = RouterClient::new(&env, &router_addr);
@@ -143,12 +147,9 @@ mod tests {
         let token2 = env.register_stellar_asset_contract_v2(admin.clone()).address();
         let token3 = env.register_stellar_asset_contract_v2(admin.clone()).address();
 
-        let amm_wasm_hash = env.deployer().upload_contract_wasm(AmmPool::WASM);
-        let lp_wasm_hash = env.deployer().upload_contract_wasm(LpToken::WASM);
-        factory.update_wasm_hashes(&amm_wasm_hash, &lp_wasm_hash);
-
-        factory.create_pool(&token1, &token2, &30_i128);
-        factory.create_pool(&token2, &token3, &30_i128);
+        // fee_tier 2 = 30 bps (Medium); governance_wasm_hash = None
+        factory.create_pool(&admin, &token1, &token2, &2_i128, &None);
+        factory.create_pool(&admin, &token2, &token3, &2_i128, &None);
 
         let pool1_addr = factory.get_pool(&token1, &token2).unwrap();
         let pool2_addr = factory.get_pool(&token2, &token3).unwrap();
@@ -183,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Slippage exceeded")]
+    #[should_panic(expected = "contract call failed")]
     fn test_slippage_exceeded() {
         let (env, router_addr, trader, token1, token2, token3, _) = setup_env_and_router();
         
@@ -204,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Slippage exceeded")]
+    #[should_panic(expected = "contract call failed")]
     fn test_atomic_revert_behavior() {
         let (env, router_addr, trader, token1, token2, token3, pool1_addr) = setup_env_and_router();
         

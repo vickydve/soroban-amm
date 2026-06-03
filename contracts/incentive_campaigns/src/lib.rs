@@ -122,12 +122,7 @@ impl IncentiveCampaigns {
         env.storage().instance().set(&DataKey::CampaignIds, &ids);
 
         let contract = env.current_contract_address();
-        TokenClient::new(&env, &reward_token).transfer_from(
-            &caller,
-            &caller,
-            &contract,
-            &funding_amount,
-        );
+        TokenClient::new(&env, &reward_token).transfer(&caller, &contract, &funding_amount);
 
         env.events().publish(
             (Symbol::new(&env, "campaign_created"),),
@@ -283,7 +278,7 @@ mod tests {
     use super::*;
     use amm::{AmmPool, AmmPoolClient};
     use soroban_sdk::{
-        testutils::Address as _,
+        testutils::{Address as _, Ledger},
         token::{StellarAssetClient, TokenClient as StellarTokenClient},
         Address, Env,
     };
@@ -311,31 +306,25 @@ mod tests {
         let tb = env.register_stellar_asset_contract_v2(admin.clone());
         let reward = env.register_stellar_asset_contract_v2(admin.clone());
 
-        AmmPoolClient::new(&env, &amm_addr)
-            .initialize(
-                &admin,
-                &ta.address(),
-                &tb.address(),
-                &lp_addr,
-                &30_i128,
-                &admin,
-                &0_i128,
-            )
-            .unwrap();
+        AmmPoolClient::new(&env, &amm_addr).initialize(
+            &admin,
+            &ta.address(),
+            &tb.address(),
+            &lp_addr,
+            &30_i128,
+            &admin,
+            &0_i128,
+        );
 
         StellarAssetClient::new(&env, &ta.address()).mint(&provider, &1_000_000);
         StellarAssetClient::new(&env, &tb.address()).mint(&provider, &1_000_000);
-        AmmPoolClient::new(&env, &amm_addr)
-            .add_liquidity(
-                &provider,
-                &1_000_000,
-                &1_000_000,
-                &0,
-                &0,
-                &0,
-                &2_000,
-            )
-            .unwrap();
+        AmmPoolClient::new(&env, &amm_addr).add_liquidity(
+            &provider,
+            &1_000_000,
+            &1_000_000,
+            &0,
+            &u64::MAX,
+        );
 
         StellarAssetClient::new(&env, &reward.address()).mint(&gov, &10_000_000);
 

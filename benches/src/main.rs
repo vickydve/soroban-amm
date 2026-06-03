@@ -174,7 +174,7 @@ fn bench_amm_flash_loan(env: &Env) {
     receiver.initialize(&amm, &true);
     StellarAssetClient::new(env, &token_a).mint(&receiver_addr, &1_000);
     env.budget().reset_default();
-    client.flash_loan(&receiver_addr, &token_a, &100_000, &Bytes::new(env));
+    client.flash_loan(&receiver_addr, &100_000_i128, &0_i128, &Bytes::new(env));
 }
 
 fn setup_cl(env: &Env) -> (ConcentratedLiquidityClient<'_>, Address, Address, Address) {
