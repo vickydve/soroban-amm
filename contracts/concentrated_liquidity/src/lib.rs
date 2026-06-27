@@ -96,6 +96,11 @@ pub enum DataKey {
     RangeOrder(Address, i32, i32), // marks a position as a range order (issue #295)
     OracleAggregator,
     MaxOracleDeviationBps,
+    PendingAdmin,
+    ProtocolFeeBps,
+    ProtocolFeeRecipient,
+    AccruedProtocolFeeA,
+    AccruedProtocolFeeB,
 }
 
 #[contracttype]
@@ -289,6 +294,65 @@ impl ConcentratedLiquidity {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) -> Result<(), ClError> {
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored {
+            return Err(ClError::Unauthorized);
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), ClError> {
+        let pending: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin).unwrap_or(None);
+        let pending_addr = pending.ok_or(ClError::Unauthorized)?;
+        if new_admin != pending_addr {
+            return Err(ClError::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
+    pub fn set_protocol_fee(env: Env, admin: Address, recipient: Address, bps: i128) -> Result<(), ClError> {
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored {
+            return Err(ClError::Unauthorized);
+        }
+        admin.require_auth();
+        if !(0..=10_000).contains(&bps) {
+            return Err(ClError::InvalidFeeBps);
+        }
+        env.storage().instance().set(&DataKey::ProtocolFeeBps, &bps);
+        env.storage().instance().set(&DataKey::ProtocolFeeRecipient, &recipient);
+        Ok(())
+    }
+
+    pub fn withdraw_protocol_fees(env: Env, admin: Address) -> Result<(), ClError> {
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if admin != stored {
+            return Err(ClError::Unauthorized);
+        }
+        admin.require_auth();
+        let recipient: Address = env.storage().instance().get(&DataKey::ProtocolFeeRecipient).unwrap_or_else(|| stored.clone());
+
+        let accrued_a: i128 = env.storage().instance().get(&DataKey::AccruedProtocolFeeA).unwrap_or(0);
+        if accrued_a > 0 {
+            let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
+            TokenClient::new(&env, &token_a).transfer(&env.current_contract_address(), &recipient, &accrued_a);
+            env.storage().instance().set(&DataKey::AccruedProtocolFeeA, &0_i128);
+        }
+        let accrued_b: i128 = env.storage().instance().get(&DataKey::AccruedProtocolFeeB).unwrap_or(0);
+        if accrued_b > 0 {
+            let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
+            TokenClient::new(&env, &token_b).transfer(&env.current_contract_address(), &recipient, &accrued_b);
+            env.storage().instance().set(&DataKey::AccruedProtocolFeeB, &0_i128);
+        }
         Ok(())
     }
 
@@ -1393,6 +1457,8 @@ impl ConcentratedLiquidity {
         let token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
         let token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
 
+        let protocol_fee_bps: i128 = env.storage().instance().get(&DataKey::ProtocolFeeBps).unwrap_or(0);
+
         // Update tick accumulator before changing current tick
         let now = env.ledger().timestamp();
         let last_ts: u64 = env
@@ -1523,26 +1589,27 @@ impl ConcentratedLiquidity {
 
                 let fee = actual_step_in - amount_in_step_after_fee;
                 if fee > 0 && active_liquidity > 0 {
+                    let protocol_fee = fee * protocol_fee_bps / 10000;
+                    let lp_fee = fee - protocol_fee;
+
                     if zero_for_one {
-                        let fg_a: i128 = env
-                            .storage()
-                            .instance()
-                            .get(&DataKey::FeeGrowthGlobalA)
-                            .unwrap_or(0);
-                        env.storage().instance().set(
-                            &DataKey::FeeGrowthGlobalA,
-                            &(fg_a + fee * 1_000_000 / active_liquidity),
-                        );
+                        if protocol_fee > 0 {
+                            let accrued_a: i128 = env.storage().instance().get(&DataKey::AccruedProtocolFeeA).unwrap_or(0);
+                            env.storage().instance().set(&DataKey::AccruedProtocolFeeA, &(accrued_a + protocol_fee));
+                        }
+                        if lp_fee > 0 {
+                            let fg_a: i128 = env.storage().instance().get(&DataKey::FeeGrowthGlobalA).unwrap_or(0);
+                            env.storage().instance().set(&DataKey::FeeGrowthGlobalA, &(fg_a + lp_fee * 1_000_000 / active_liquidity));
+                        }
                     } else {
-                        let fg_b: i128 = env
-                            .storage()
-                            .instance()
-                            .get(&DataKey::FeeGrowthGlobalB)
-                            .unwrap_or(0);
-                        env.storage().instance().set(
-                            &DataKey::FeeGrowthGlobalB,
-                            &(fg_b + fee * 1_000_000 / active_liquidity),
-                        );
+                        if protocol_fee > 0 {
+                            let accrued_b: i128 = env.storage().instance().get(&DataKey::AccruedProtocolFeeB).unwrap_or(0);
+                            env.storage().instance().set(&DataKey::AccruedProtocolFeeB, &(accrued_b + protocol_fee));
+                        }
+                        if lp_fee > 0 {
+                            let fg_b: i128 = env.storage().instance().get(&DataKey::FeeGrowthGlobalB).unwrap_or(0);
+                            env.storage().instance().set(&DataKey::FeeGrowthGlobalB, &(fg_b + lp_fee * 1_000_000 / active_liquidity));
+                        }
                     }
                 }
 
@@ -1601,26 +1668,27 @@ impl ConcentratedLiquidity {
 
                     let fee = actual_in - amt_in_after_fee;
                     if fee > 0 {
+                        let protocol_fee = fee * protocol_fee_bps / 10000;
+                        let lp_fee = fee - protocol_fee;
+
                         if zero_for_one {
-                            let fg_a: i128 = env
-                                .storage()
-                                .instance()
-                                .get(&DataKey::FeeGrowthGlobalA)
-                                .unwrap_or(0);
-                            env.storage().instance().set(
-                                &DataKey::FeeGrowthGlobalA,
-                                &(fg_a + fee * 1_000_000 / active_liquidity),
-                            );
+                            if protocol_fee > 0 {
+                                let accrued_a: i128 = env.storage().instance().get(&DataKey::AccruedProtocolFeeA).unwrap_or(0);
+                                env.storage().instance().set(&DataKey::AccruedProtocolFeeA, &(accrued_a + protocol_fee));
+                            }
+                            if lp_fee > 0 {
+                                let fg_a: i128 = env.storage().instance().get(&DataKey::FeeGrowthGlobalA).unwrap_or(0);
+                                env.storage().instance().set(&DataKey::FeeGrowthGlobalA, &(fg_a + lp_fee * 1_000_000 / active_liquidity));
+                            }
                         } else {
-                            let fg_b: i128 = env
-                                .storage()
-                                .instance()
-                                .get(&DataKey::FeeGrowthGlobalB)
-                                .unwrap_or(0);
-                            env.storage().instance().set(
-                                &DataKey::FeeGrowthGlobalB,
-                                &(fg_b + fee * 1_000_000 / active_liquidity),
-                            );
+                            if protocol_fee > 0 {
+                                let accrued_b: i128 = env.storage().instance().get(&DataKey::AccruedProtocolFeeB).unwrap_or(0);
+                                env.storage().instance().set(&DataKey::AccruedProtocolFeeB, &(accrued_b + protocol_fee));
+                            }
+                            if lp_fee > 0 {
+                                let fg_b: i128 = env.storage().instance().get(&DataKey::FeeGrowthGlobalB).unwrap_or(0);
+                                env.storage().instance().set(&DataKey::FeeGrowthGlobalB, &(fg_b + lp_fee * 1_000_000 / active_liquidity));
+                            }
                         }
                     }
 
