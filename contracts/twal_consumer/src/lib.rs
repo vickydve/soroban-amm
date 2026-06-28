@@ -21,6 +21,8 @@ pub trait ClPoolLiquidityOracle {
 
 #[contracttype]
 pub enum DataKey {
+    /// Address authorized to write snapshots (a keeper bot or governance).
+    Keeper,
     LiquiditySnapshot(Address, u64),
     TrackedPools,
 }
@@ -39,8 +41,36 @@ pub struct TwalConsumer;
 impl TwalConsumer {
     pub const SNAPSHOT_TTL_LEDGERS: u32 = 120_960;
 
+    /// Registers the keeper authorized to write liquidity snapshots.
+    ///
+    /// Must be called once at deploy time. Snapshot writes (`save_snapshot`,
+    /// `save_cl_snapshot`) require the keeper's authorization, preventing
+    /// arbitrary callers from corrupting the TWAL history that downstream
+    /// yield-calculation and multi-pool analytics depend on.
+    pub fn initialize(env: Env, keeper: Address) {
+        assert!(
+            !env.storage().instance().has(&DataKey::Keeper),
+            "already initialized"
+        );
+        env.storage().instance().set(&DataKey::Keeper, &keeper);
+    }
+
+    /// Returns the configured keeper, panicking if the contract is not initialized.
+    pub fn get_keeper(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Keeper)
+            .unwrap_or_else(|| panic!("contract not initialized"))
+    }
+
+    /// Requires the stored keeper's authorization for snapshot writes.
+    fn require_keeper(env: &Env) {
+        Self::get_keeper(env.clone()).require_auth();
+    }
+
     /// Persist a pool liquidity accumulator snapshot keyed by ledger timestamp.
     pub fn save_snapshot(env: Env, pool: Address) {
+        Self::require_keeper(&env);
         let (cum, pool_ts) = AmmPoolLiquidityClient::new(&env, &pool).get_liquidity_cumulative();
         let ledger_ts = env.ledger().timestamp();
         let snapshot = LiquiditySnapshot {
@@ -121,9 +151,9 @@ impl TwalConsumer {
 
     /// Save CL pool snapshot using active_liquidity * elapsed approximation.
     pub fn save_cl_snapshot(env: Env, pool: Address) {
+        Self::require_keeper(&env);
         let active = ClPoolLiquidityClient::new(&env, &pool).active_liquidity();
-        let (_tick_cum, pool_ts) =
-            ClPoolLiquidityClient::new(&env, &pool).get_tick_cumulative();
+        let (_tick_cum, pool_ts) = ClPoolLiquidityClient::new(&env, &pool).get_tick_cumulative();
         let ledger_ts = env.ledger().timestamp();
         let snapshot = LiquiditySnapshot {
             cum_liquidity: active,
@@ -200,16 +230,15 @@ mod tests {
 
         let (ta, ta_sac) = create_sac(&env, &admin);
         let (tb, tb_sac) = create_sac(&env, &admin);
-        AmmPoolClient::new(&env, &amm_addr)
-            .initialize(
-                &admin,
-                &ta.address,
-                &tb.address,
-                &lp_addr,
-                &30_i128,
-                &admin,
-                &0_i128,
-            );
+        AmmPoolClient::new(&env, &amm_addr).initialize(
+            &admin,
+            &ta.address,
+            &tb.address,
+            &lp_addr,
+            &30_i128,
+            &admin,
+            &0_i128,
+        );
 
         let provider = Address::generate(&env);
         ta_sac.mint(&provider, &1_000_000_i128);
@@ -223,6 +252,7 @@ mod tests {
         );
 
         let consumer = TwalConsumerClient::new(&env, &consumer_addr);
+        consumer.initialize(&admin);
         consumer.save_snapshot(&amm_addr);
 
         env.ledger().with_mut(|l| l.timestamp = 10_600);
@@ -242,9 +272,64 @@ mod tests {
         // Trigger a pool interaction so checkpoint_twal advances pool_ts to 11_200.
         let trader = Address::generate(&env);
         ta_sac.mint(&trader, &1_000_i128);
-        AmmPoolClient::new(&env, &amm_addr).swap(&trader, &ta.address, &1_000_i128, &0_i128, &u64::MAX);
+        AmmPoolClient::new(&env, &amm_addr).swap(
+            &trader,
+            &ta.address,
+            &1_000_i128,
+            &0_i128,
+            &u64::MAX,
+        );
 
         let twal = consumer.get_twal_liquidity(&amm_addr, &600);
         assert!(twal > 0);
+    }
+
+    // Issue #372: snapshot writes must be gated behind the keeper's auth.
+    #[test]
+    fn test_save_snapshot_requires_keeper_auth() {
+        let env = Env::default();
+        env.ledger().set_timestamp(10_000);
+
+        let keeper = Address::generate(&env);
+        let pool = Address::generate(&env);
+        let consumer_addr = env.register_contract(None, TwalConsumer);
+        let consumer = TwalConsumerClient::new(&env, &consumer_addr);
+
+        consumer.initialize(&keeper);
+
+        // No auth has been mocked: unauthorized snapshot writes must fail.
+        assert!(consumer.try_save_snapshot(&pool).is_err());
+        assert!(consumer.try_save_cl_snapshot(&pool).is_err());
+    }
+
+    // Issue #372: snapshot writes must fail before initialize is called.
+    #[test]
+    fn test_save_snapshot_fails_when_uninitialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(10_000);
+
+        let pool = Address::generate(&env);
+        let consumer_addr = env.register_contract(None, TwalConsumer);
+        let consumer = TwalConsumerClient::new(&env, &consumer_addr);
+
+        // Keeper was never registered, so the contract is uninitialized.
+        assert!(consumer.try_save_snapshot(&pool).is_err());
+    }
+
+    // Issue #372: initialize is a one-time operation.
+    #[test]
+    fn test_initialize_is_idempotent_guard() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let keeper = Address::generate(&env);
+        let consumer_addr = env.register_contract(None, TwalConsumer);
+        let consumer = TwalConsumerClient::new(&env, &consumer_addr);
+
+        consumer.initialize(&keeper);
+        assert_eq!(consumer.get_keeper(), keeper);
+        // A second initialize must be rejected.
+        assert!(consumer.try_initialize(&Address::generate(&env)).is_err());
     }
 }
