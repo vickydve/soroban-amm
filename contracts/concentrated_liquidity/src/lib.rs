@@ -537,6 +537,11 @@ impl ConcentratedLiquidity {
     /// upper_tick)` storage key, settles accrued fees into `tokens_owed`, and
     /// computes the required token amounts from the current price before
     /// increasing the stored liquidity.
+    ///
+    /// `deadline` is a Unix timestamp (seconds); the call reverts with
+    /// [`ClError::DeadlineExpired`] once the ledger time has passed it. The
+    /// `min_a` / `min_b` slippage guards alone cannot protect a transaction
+    /// that sits in the mempool and later executes at a stale price.
     pub fn modify_position(
         env: Env,
         provider: Address,
@@ -545,7 +550,11 @@ impl ConcentratedLiquidity {
         liquidity_delta: i128,
         min_a: i128,
         min_b: i128,
+        deadline: u64,
     ) -> Result<(i128, i128), ClError> {
+        if env.ledger().timestamp() > deadline {
+            return Err(ClError::DeadlineExpired);
+        }
         if Self::is_paused(env.clone()) {
             return Err(ClError::Paused);
         }
@@ -2769,6 +2778,19 @@ mod tests {
     }
 
     #[test]
+    fn test_modify_position_deadline_expired() {
+        let env = Env::default();
+        let te = setup_test_env(&env, 0, 0);
+        env.ledger().set_timestamp(101);
+        // The deadline check runs before any position lookup, so an expired
+        // deadline must short-circuit regardless of position state.
+        let result = te
+            .client
+            .try_modify_position(&te.provider, &-100, &100, &1000, &0, &0, &100);
+        assert_eq!(result, Err(Ok(ClError::DeadlineExpired)));
+    }
+
+    #[test]
     fn test_non_overlapping_fee_collection() {
         let env = Env::default();
         let te = setup_test_env(&env, 1000, 100); // 10% fee, start at tick 100
@@ -3498,6 +3520,7 @@ mod test_new_features {
             &5_000_i128,
             &0_i128,
             &0_i128,
+            &u64::MAX,
         );
 
         assert_eq!(added_a, quote.0, "modify_position must use the current-price quote for token A");

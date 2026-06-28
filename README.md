@@ -313,7 +313,7 @@ A V3-style tick-based AMM where liquidity providers specify a price range `[lowe
 |---|---|
 | `initialize(token_a, token_b, fee_bps, initial_tick)` | One-time pool setup |
 | `mint_position(provider, lower_tick, upper_tick, amount_a_desired, amount_b_desired, min_a, min_b) → (a, b)` | Open or add to a tick-range position |
-| `modify_position(provider, lower_tick, upper_tick, liquidity_delta, min_a, min_b) → (a, b)` | Increase liquidity on an existing position in place |
+| `modify_position(provider, lower_tick, upper_tick, liquidity_delta, min_a, min_b, deadline) → (a, b)` | Increase liquidity on an existing position in place |
 | `burn_position(provider, lower_tick, upper_tick, liquidity) → (a, b)` | Reduce or close a position and withdraw tokens |
 | `collect_fees(provider, lower_tick, upper_tick) → (a, b)` | Collect accrued fees for a position |
 | `get_position(provider, lower_tick, upper_tick) → Position` | Read a position's current state |
