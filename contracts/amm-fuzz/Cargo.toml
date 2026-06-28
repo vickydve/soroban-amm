@@ -3,12 +3,25 @@ name = "amm-fuzz"
 version = "0.1.0"
 edition = "2021"
 
-# This is a test-only crate; it produces no WASM artifact.
-[lib]
-crate-type = ["lib"]
+[[bin]]
+name = "fuzz_cl_pool"
+path = "src/lib.rs"
+
+[features]
+testutils = [
+    "soroban-sdk/testutils",
+    "token/testutils",
+    "concentrated_liquidity/testutils",
+]
 
 [dependencies]
+soroban-sdk = { workspace = true }
+token = { path = "../token" }
+concentrated_liquidity = { path = "../concentrated_liquidity" }
+libfuzzer-sys = { version = "0.4", optional = true }
+arbitrary = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 token = { path = "../token", features = ["testutils"] }
-amm = { path = "../amm", features = ["testutils"] }
-proptest = "1"
+concentrated_liquidity = { path = "../concentrated_liquidity", features = ["testutils"] }
