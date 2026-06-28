@@ -38,6 +38,8 @@ pub enum AuctionError {
     DeadlineExceeded = 7,
     BatchFull = 8,
     InvalidMaxOrders = 9,
+    /// `token_in`/`token_out` do not match the pool's token pair (issue #361).
+    InvalidPoolTokenPair = 10,
 }
 
 // ── Storage types ─────────────────────────────────────────────────────────────
@@ -113,8 +115,8 @@ impl BatchAuction {
     /// Submit a swap order and escrow `amount_in` of `token_in`.
     ///
     /// Tokens are pulled from `trader` immediately so the batch holds a firm
-    /// commitment. `token_out` must be the other pool token (not validated
-    /// on-chain — mismatches are caught at settlement time).
+    /// commitment. `token_in`/`token_out` must be the pool's token pair; this
+    /// is validated here so a mismatched order can never reach `settle_batch`.
     ///
     /// Returns the new order ID.
     pub fn submit_order(
@@ -132,6 +134,18 @@ impl BatchAuction {
         }
         if amount_in <= 0 {
             return Err(AuctionError::ZeroAmount);
+        }
+
+        // Validate the order's tokens against the pool's actual pair up front.
+        // If a mismatched pair slipped through, settle_batch would call swap
+        // with the wrong tokens and panic; since settlement is atomic, that
+        // panic reverts the whole batch and locks every other trader's escrow
+        // until each order is cancelled individually (issue #361).
+        let info = AmmPoolClient::new(&env, &pool).get_info();
+        let valid_pair = (token_in == info.token_a && token_out == info.token_b)
+            || (token_in == info.token_b && token_out == info.token_a);
+        if !valid_pair {
+            return Err(AuctionError::InvalidPoolTokenPair);
         }
 
         let mut pending: Vec<u64> = env
@@ -486,6 +500,48 @@ mod tests {
         // Trader received token_b.
         let tb_balance = StellarTokenClient::new(&env, &tb).balance(&trader);
         assert!(tb_balance > 0);
+    }
+
+    #[test]
+    fn test_submit_order_rejects_mismatched_pool_tokens() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set_timestamp(1000);
+
+        let (ta, _tb, pool, admin) = setup(&env);
+
+        // A token that is not part of the pool's pair.
+        let foreign_admin = Address::generate(&env);
+        let foreign = env
+            .register_stellar_asset_contract_v2(foreign_admin)
+            .address();
+
+        let auction_addr = env.register_contract(None, BatchAuction);
+        let client = BatchAuctionClient::new(&env, &auction_addr);
+        client.initialize(&admin, &30_u64);
+
+        let trader = Address::generate(&env);
+        StellarAssetClient::new(&env, &ta).mint(&trader, &100_000_i128);
+
+        // token_out is not the pool's other token → rejected up front.
+        let result = client.try_submit_order(
+            &trader,
+            &pool,
+            &ta,
+            &foreign,
+            &10_000_i128,
+            &0_i128,
+            &u64::MAX,
+        );
+        assert_eq!(result, Err(Ok(AuctionError::InvalidPoolTokenPair)));
+
+        // The order is rejected before any escrow, so the trader keeps its funds
+        // and no order is recorded in the batch.
+        assert_eq!(
+            StellarTokenClient::new(&env, &ta).balance(&trader),
+            100_000_i128
+        );
+        assert_eq!(client.get_pending_orders().len(), 0);
     }
 
     #[test]
