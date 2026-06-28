@@ -17,7 +17,8 @@ pub enum DataKey {
     /// Address authorized to write and delete snapshots (a keeper bot or governance).
     Keeper,
     Snapshot(Address, u64),
-    TrackedPools,
+    /// Persistent storage for tracked pools to avoid instance storage limits.
+    TrackedPoolsPersistent,
 }
 
 #[contracttype]
@@ -93,13 +94,11 @@ impl TwapConsumer {
             &key,
             Self::SNAPSHOT_TTL_LEDGERS / 2,
             Self::SNAPSHOT_TTL_LEDGERS,
-        );
-
-        // Register pool if not already tracked.
+        );        // Register pool if not already tracked in persistent storage.
         let mut tracked: Vec<Address> = env
             .storage()
-            .instance()
-            .get(&DataKey::TrackedPools)
+            .persistent()
+            .get(&DataKey::TrackedPoolsPersistent)
             .unwrap_or_else(|| Vec::new(&env));
         let mut already_tracked = false;
         for i in 0..tracked.len() {
@@ -111,8 +110,12 @@ impl TwapConsumer {
         if !already_tracked {
             tracked.push_back(pool);
             env.storage()
-                .instance()
-                .set(&DataKey::TrackedPools, &tracked);
+                .persistent()
+                .set(&DataKey::TrackedPoolsPersistent, &tracked);
+            // Extend TTL so it stays alive as long as snapshots are kept.
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::TrackedPoolsPersistent, Self::SNAPSHOT_TTL_LEDGERS / 2, Self::SNAPSHOT_TTL_LEDGERS);
         }
     }
 
@@ -265,8 +268,8 @@ impl TwapConsumer {
     /// Returns the list of pool addresses that have had at least one snapshot saved.
     pub fn get_tracked_pools(env: Env) -> Vec<Address> {
         env.storage()
-            .instance()
-            .get(&DataKey::TrackedPools)
+            .persistent()
+            .get(&DataKey::TrackedPoolsPersistent)
             .unwrap_or_else(|| Vec::new(&env))
     }
 

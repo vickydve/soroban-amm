@@ -312,6 +312,7 @@ impl AmmPool {
         protocol_fee_bps: i128,
         flash_loan_fee_bps: i128,
     ) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         if env.storage().instance().has(&DataKey::TokenA) {
             return Err(AmmError::AlreadyInitialized);
         }
@@ -399,6 +400,7 @@ impl AmmPool {
 
     /// Admin: attach or remove the oracle aggregator used for swap deviation checks.
     pub fn set_oracle(env: Env, admin: Address, oracle: Option<Address>) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != stored_admin {
             return Err(AmmError::Unauthorized);
@@ -416,6 +418,7 @@ impl AmmPool {
         admin: Address,
         max_deviation_bps: i128,
     ) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != stored_admin {
             return Err(AmmError::Unauthorized);
@@ -431,6 +434,7 @@ impl AmmPool {
     }
 
     pub fn pause(env: Env) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
@@ -438,6 +442,7 @@ impl AmmPool {
     }
 
     pub fn unpause(env: Env) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
@@ -454,6 +459,7 @@ impl AmmPool {
     /// Emergency withdraw of all pool reserves to a designated address.
     /// Admin-only, callable via a timed governance proposal.
     pub fn emergency_withdraw(env: Env, to: Address) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
 
@@ -542,6 +548,7 @@ impl AmmPool {
         threshold_bps: i128,
         cooldown_secs: u64,
     ) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
 
@@ -598,6 +605,7 @@ impl AmmPool {
 
     /// Attempt automatic recovery after the circuit breaker cooldown.
     pub fn try_circuit_breaker_recovery(env: Env) -> Result<bool, AmmError> {
+        Self::extend_ttl(&env);
         let triggered_at: u64 = env
             .storage()
             .instance()
@@ -723,6 +731,7 @@ impl AmmPool {
         recipient: Address,
         protocol_fee_bps: i128,
     ) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != stored_admin {
             return Err(AmmError::Unauthorized);
@@ -762,6 +771,7 @@ impl AmmPool {
     /// (e.g. 5_000 = 50 % of the protocol cut goes back to LPs).
     /// Must be in `[0, 10_000]`. Admin-only.
     pub fn set_lp_rebate(env: Env, admin: Address, lp_rebate_bps: i128) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != stored_admin {
             return Err(AmmError::Unauthorized);
@@ -802,6 +812,7 @@ impl AmmPool {
         signers: soroban_sdk::Vec<Address>,
         quorum: u32,
     ) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != stored_admin {
             return Err(AmmError::Unauthorized);
@@ -859,6 +870,7 @@ impl AmmPool {
         signer: Address,
         recipient: Address,
     ) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         signer.require_auth();
         let quorum: u32 = env
             .storage()
@@ -930,6 +942,7 @@ impl AmmPool {
     ///
     /// Any signer may call this after enough approvals have been collected.
     pub fn exec_multisig_emergency_wd(env: Env, signer: Address) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         signer.require_auth();
         let quorum: u32 = env
             .storage()
@@ -1046,6 +1059,12 @@ impl AmmPool {
         Ok(())
     }
 
+    fn extend_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(172_800, 518_400);
+    }
+
     /// Update the swap fee post-deployment. Admin-only.
     ///
     /// The new fee takes effect on the very next swap.
@@ -1060,6 +1079,7 @@ impl AmmPool {
     /// - If `new_fee_bps` is outside [0, 10_000].
     /// - If `new_fee_bps` is less than the current `protocol_fee_bps`.
     pub fn update_fee(env: Env, new_fee_bps: i128) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         Self::validate_fee_bps(new_fee_bps)?;
@@ -1079,6 +1099,7 @@ impl AmmPool {
 
     /// Update the flash loan fee post-deployment. Admin-only.
     pub fn update_flash_loan_fee(env: Env, new_fee_bps: i128) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         Self::validate_fee_bps(new_fee_bps)?;
@@ -1103,6 +1124,7 @@ impl AmmPool {
         current_admin: Address,
         new_admin: Address,
     ) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if current_admin != stored {
             return Err(AmmError::Unauthorized);
@@ -1121,6 +1143,7 @@ impl AmmPool {
 
     /// Accept the pending admin nomination. Caller becomes the new admin.
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let pending: Option<Address> = env
             .storage()
             .instance()
@@ -1148,6 +1171,7 @@ impl AmmPool {
     /// The new WASM must already be uploaded to the network.
     /// State is preserved; only bytecode is replaced.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), AmmError> {
+        Self::extend_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         env.deployer()
@@ -1313,6 +1337,7 @@ impl AmmPool {
         min_shares: i128,
         deadline: u64,
     ) -> Result<i128, AmmError> {
+        Self::extend_ttl(&env);
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
@@ -1444,6 +1469,7 @@ impl AmmPool {
         min_b: i128,
         deadline: u64,
     ) -> Result<(i128, i128), AmmError> {
+        Self::extend_ttl(&env);
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
@@ -1544,6 +1570,7 @@ impl AmmPool {
         min_out: i128,
         deadline: u64,
     ) -> Result<i128, AmmError> {
+        Self::extend_ttl(&env);
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
@@ -1755,6 +1782,7 @@ impl AmmPool {
         min_out: i128,
         deadline: u64,
     ) -> Result<i128, AmmError> {
+        Self::extend_ttl(&env);
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
@@ -1915,6 +1943,7 @@ impl AmmPool {
         max_in: i128,
         deadline: u64,
     ) -> Result<i128, AmmError> {
+        Self::extend_ttl(&env);
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
@@ -2044,6 +2073,7 @@ impl AmmPool {
     /// Only callable by the fee recipient. Resets accrued balances to zero.
     /// Returns `(fee_a_withdrawn, fee_b_withdrawn)`.
     pub fn withdraw_protocol_fees(env: Env) -> Result<(i128, i128), AmmError> {
+        Self::extend_ttl(&env);
         let fee_recipient: Address = env
             .storage()
             .instance()
@@ -2102,6 +2132,7 @@ impl AmmPool {
         amount_b: i128,
         data: Bytes,
     ) -> Result<(i128, i128), AmmError> {
+        Self::extend_ttl(&env);
         if Self::is_paused(env.clone()) {
             return Err(AmmError::Paused);
         }
@@ -2455,6 +2486,7 @@ impl AmmPool {
         deadline: u64,
         referrer: Option<Address>,
     ) -> Result<(i128, i128), AmmError> {
+        Self::extend_ttl(&env);
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
@@ -2612,6 +2644,7 @@ impl AmmPool {
         min_shares: i128,
         deadline: u64,
     ) -> Result<i128, AmmError> {
+        Self::extend_ttl(&env);
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
