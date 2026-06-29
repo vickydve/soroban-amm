@@ -2,9 +2,7 @@
 
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec};
 
 // Export compiled WASM for tests/dev usage when the `testutils` feature is enabled.
 #[cfg(feature = "testutils")]
@@ -94,6 +92,25 @@ impl LpToken {
             .persistent()
             .get(&DataKey::Balance(id))
             .unwrap_or(0)
+    }
+
+    /// Returns the balance of `id` at or before `ledger` (for governance snapshots).
+    pub fn balance_at(env: Env, id: Address, ledger: u32) -> i128 {
+        let checkpoints: Vec<Checkpoint> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Checkpoints(id))
+            .unwrap_or(Vec::new(&env));
+        let mut result = 0_i128;
+        for i in 0..checkpoints.len() {
+            let cp = checkpoints.get(i).unwrap();
+            if cp.ledger <= ledger {
+                result = cp.balance;
+            } else {
+                break;
+            }
+        }
+        result
     }
 
     /// Returns the amount `spender` is allowed to transfer on behalf of `from`.
@@ -213,6 +230,7 @@ impl LpToken {
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(supply - amount));
+        Self::write_checkpoint(&env, &from);
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
@@ -330,45 +348,31 @@ impl LpToken {
         env.storage()
             .persistent()
             .set(&DataKey::Balance(to.clone()), &(to_bal + amount));
-        Self::write_checkpoint(env, to, to_bal + amount);
+        Self::write_checkpoint(env, from);
+        Self::write_checkpoint(env, to);
         env.events().publish(
             (Symbol::new(env, "transfer"), from.clone()),
             (to.clone(), amount),
         );
     }
 
-    fn write_checkpoint(env: &Env, account: &Address, balance: i128) {
-        let key = DataKey::Checkpoints(account.clone());
+    fn write_checkpoint(env: &Env, account: &Address) {
         let ledger = env.ledger().sequence();
+        let balance = Self::balance(env.clone(), account.clone());
+        let key = DataKey::Checkpoints(account.clone());
         let mut checkpoints: Vec<Checkpoint> = env
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| Vec::new(env));
-
-        let len = checkpoints.len();
-        if len > 0 {
-            let last_idx = len - 1;
-            let mut last = checkpoints.get(last_idx).unwrap();
+            .unwrap_or(Vec::new(env));
+        if checkpoints.len() > 0 {
+            let last = checkpoints.get(checkpoints.len() - 1).unwrap();
             if last.ledger == ledger {
-                last.balance = balance;
-                checkpoints.set(last_idx, last);
-                env.storage().persistent().set(&key, &checkpoints);
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&key, Self::MIN_TTL, Self::BUMP_TO);
-                return;
+                checkpoints.pop_back();
             }
-        }
-
-        if checkpoints.len() >= Self::MAX_CHECKPOINTS {
-            checkpoints.remove(0);
         }
         checkpoints.push_back(Checkpoint { ledger, balance });
         env.storage().persistent().set(&key, &checkpoints);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, Self::MIN_TTL, Self::BUMP_TO);
     }
 }
 
@@ -377,10 +381,7 @@ impl LpToken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{
-        testutils::{Address as _, Ledger},
-        Env,
-    };
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Env};
 
     struct TestSetup {
         env: Env,
@@ -512,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn test_balance_at_uses_checkpoints() {
+    fn test_balance_at_snapshot() {
         let ts = setup();
         let client = LpTokenClient::new(&ts.env, &ts.contract_addr);
         let alice = Address::generate(&ts.env);

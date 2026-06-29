@@ -1,15 +1,26 @@
 /**
- * @soroban-amm/sdk — Issue #104
+ * @soroban-amm/sdk
  *
- * Typed TypeScript SDK for the Soroban AMM contract.
+ * Typed TypeScript SDK for all five Soroban AMM contracts.
  *
  * ```ts
- * import { AmmPool } from "@soroban-amm/sdk";
+ * import { AmmPool, TokenClient, FactoryClient, GovernanceClient, ConcentratedLiquidityClient } from "@soroban-amm/sdk";
+ *
  * const pool = new AmmPool({ rpcUrl, networkPassphrase, contractId });
- * const info  = await pool.getInfo();
+ * const info = await pool.getInfo();
  * const quote = await pool.simulateSwap(tokenIn, amountIn);
+ *
+ * const factory = new FactoryClient({ rpcUrl, networkPassphrase, contractId: factoryId });
+ * const pools = await factory.allPools();
  * ```
  */
 
 export { AmmPool } from "./AmmPool.js";
+export { TokenClient } from "./token.js";
+export { FactoryClient } from "./factory.js";
+export type { CreatePoolResult } from "./factory.js";
+export { GovernanceClient } from "./governance.js";
+export type { GovernanceParams, Proposal, ProposalStatus, VoteChoice, VoteRecord } from "./governance.js";
+export { ConcentratedLiquidityClient } from "./cl.js";
+export type { Position, ClPoolState, PositionQuote, PriceImpactEstimate } from "./cl.js";
 export * from "./types.js";
