@@ -1659,6 +1659,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "twal-consumer"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "twap-consumer"
 version = "0.1.0"
 dependencies = [
