@@ -602,6 +602,13 @@ mod tests {
         );
         assert_eq!(swap_result.unwrap_err(), AmmError::CircuitBreaker);
 
+        // Verify circuit-breaker-triggered event was emitted
+        let events = env.events().all();
+        let cb_triggered = events
+            .iter()
+            .any(|e| e.topics[0].to_string() == "circuit_break");
+        assert!(cb_triggered, "circuit-breaker-triggered event should be emitted");
+
         // Verify circuit breaker state
         let config_after = amm.get_circuit_breaker_config();
         assert!(config_after.tripped, "circuit breaker should be tripped");
@@ -626,6 +633,13 @@ mod tests {
             recovered.unwrap(),
             "recovery should succeed after cooldown"
         );
+
+        // Verify circuit-breaker-recovered event was emitted
+        let events = env.events().all();
+        let cb_recovered = events
+            .iter()
+            .any(|e| e.topics[0].to_string() == "cb_recovered");
+        assert!(cb_recovered, "circuit-breaker-recovered event should be emitted");
 
         // Verify circuit breaker is no longer tripped
         let config_recovered = amm.get_circuit_breaker_config();
