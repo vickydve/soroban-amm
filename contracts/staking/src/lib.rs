@@ -36,6 +36,9 @@ const DEFAULT_MAX_BOOST: i128 = 25_000;
 /// Minimum boost multiplier (1×, stored as 10_000 / BOOST_SCALE).
 const MIN_BOOST: i128 = BOOST_SCALE;
 
+const MIN_TTL: u32 = 518_400;   // ~30 days (at 5s per ledger)
+const BUMP_TO: u32 = 3_110_400; // ~180 days (at 5s per ledger)
+
 // ── Storage keys ───────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -221,12 +224,13 @@ impl Staking {
             .instance()
             .set(&DataKey::TotalEffectiveStaked, &(total - old_effective + new_effective).max(0));
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::LockExpiry(staker.clone()), &expiry);
-        env.storage()
-            .persistent()
-            .set(&DataKey::BoostMultiplier(staker.clone()), &boost);
+        let key_lock = DataKey::LockExpiry(staker.clone());
+        env.storage().persistent().set(&key_lock, &expiry);
+        env.storage().persistent().extend_ttl(&key_lock, MIN_TTL, BUMP_TO);
+
+        let key_boost = DataKey::BoostMultiplier(staker.clone());
+        env.storage().persistent().set(&key_boost, &boost);
+        env.storage().persistent().extend_ttl(&key_boost, MIN_TTL, BUMP_TO);
 
         let acc_per_share: i128 = env
             .storage()
@@ -234,9 +238,9 @@ impl Staking {
             .get(&DataKey::AccumulatedRewardsPerShare)
             .unwrap_or(0);
         let new_debt = new_effective * acc_per_share / SCALE_FACTOR;
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerRewardsDebt(staker.clone()), &new_debt);
+        let key_debt = DataKey::StakerRewardsDebt(staker.clone());
+        env.storage().persistent().set(&key_debt, &new_debt);
+        env.storage().persistent().extend_ttl(&key_debt, MIN_TTL, BUMP_TO);
 
         env.events().publish(
             (Symbol::new(&env, "lock_extended"),),
@@ -376,9 +380,9 @@ impl Staking {
             .get(&DataKey::StakerAmount(staker.clone()))
             .unwrap_or(0);
         let new_staked = current_staked + amount;
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerAmount(staker.clone()), &new_staked);
+        let key_amount = DataKey::StakerAmount(staker.clone());
+        env.storage().persistent().set(&key_amount, &new_staked);
+        env.storage().persistent().extend_ttl(&key_amount, MIN_TTL, BUMP_TO);
 
         // Recompute effective amount for the whole position with the new boost.
         let old_effective = Self::_effective_amount(current_staked, new_boost);
@@ -397,12 +401,13 @@ impl Staking {
             .set(&DataKey::TotalEffectiveStaked, &new_total.max(0));
 
         // Persist lock and boost.
-        env.storage()
-            .persistent()
-            .set(&DataKey::LockExpiry(staker.clone()), &new_expiry);
-        env.storage()
-            .persistent()
-            .set(&DataKey::BoostMultiplier(staker.clone()), &new_boost);
+        let key_lock = DataKey::LockExpiry(staker.clone());
+        env.storage().persistent().set(&key_lock, &new_expiry);
+        env.storage().persistent().extend_ttl(&key_lock, MIN_TTL, BUMP_TO);
+
+        let key_boost = DataKey::BoostMultiplier(staker.clone());
+        env.storage().persistent().set(&key_boost, &new_boost);
+        env.storage().persistent().extend_ttl(&key_boost, MIN_TTL, BUMP_TO);
 
         // Reset rewards debt to current acc_per_share * new_effective.
         let acc_per_share: i128 = env
@@ -411,9 +416,9 @@ impl Staking {
             .get(&DataKey::AccumulatedRewardsPerShare)
             .unwrap_or(0);
         let new_debt = new_effective * acc_per_share / SCALE_FACTOR;
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerRewardsDebt(staker.clone()), &new_debt);
+        let key_debt = DataKey::StakerRewardsDebt(staker.clone());
+        env.storage().persistent().set(&key_debt, &new_debt);
+        env.storage().persistent().extend_ttl(&key_debt, MIN_TTL, BUMP_TO);
 
         env.events().publish(
             (Symbol::new(&env, "staked"),),
@@ -472,9 +477,9 @@ impl Staking {
         let new_staked = staked_amount - amount;
         let new_effective = Self::_effective_amount(new_staked, boost);
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerAmount(staker.clone()), &new_staked);
+        let key_amount = DataKey::StakerAmount(staker.clone());
+        env.storage().persistent().set(&key_amount, &new_staked);
+        env.storage().persistent().extend_ttl(&key_amount, MIN_TTL, BUMP_TO);
 
         let total: i128 = env
             .storage()
@@ -492,9 +497,9 @@ impl Staking {
             .get(&DataKey::AccumulatedRewardsPerShare)
             .unwrap_or(0);
         let new_debt = new_effective * acc_per_share / SCALE_FACTOR;
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerRewardsDebt(staker.clone()), &new_debt);
+        let key_debt = DataKey::StakerRewardsDebt(staker.clone());
+        env.storage().persistent().set(&key_debt, &new_debt);
+        env.storage().persistent().extend_ttl(&key_debt, MIN_TTL, BUMP_TO);
 
         env.events().publish((Symbol::new(&env, "unstaked"),), (staker, amount, rewards));
         (amount, rewards)
@@ -714,9 +719,9 @@ impl Staking {
             .get(&DataKey::AccumulatedRewardsPerShare)
             .unwrap_or(0);
         let new_debt = effective * acc_per_share / SCALE_FACTOR;
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakerRewardsDebt(staker.clone()), &new_debt);
+        let key_debt = DataKey::StakerRewardsDebt(staker.clone());
+        env.storage().persistent().set(&key_debt, &new_debt);
+        env.storage().persistent().extend_ttl(&key_debt, MIN_TTL, BUMP_TO);
 
         SepTokenClient::new(env, &reward_token).transfer(&pool_addr, staker, &pending);
 
