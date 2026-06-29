@@ -242,6 +242,7 @@ impl OracleAggregator {
 
         let mut prices: Vec<i128> = Vec::new(env);
         let mut updated: Vec<OracleSource> = Vec::new(env);
+        let mut stale_sources: Vec<Address> = Vec::new(env);
 
         for i in 0..sources.len() {
             let mut source = sources.get_unchecked(i);
@@ -249,15 +250,25 @@ impl OracleAggregator {
                 || now <= source.last_updated_at
                 || now - source.last_updated_at <= max_staleness;
 
+            let mut contributed = false;
             if is_fresh {
                 let client = OracleSourceAdapterClient::new(env, &source.source_contract);
                 let price = client.quote(&token_a, &token_b);
                 if price > 0 {
                     source.last_updated_at = now;
                     prices.push_back(price);
+                    contributed = true;
                 }
             }
+            if !contributed {
+                stale_sources.push_back(source.source_contract.clone());
+            }
             updated.push_back(source);
+        }
+
+        if !stale_sources.is_empty() {
+            env.events()
+                .publish((symbol_short!("stale_src"),), (stale_sources,));
         }
 
         if prices.len() < MIN_VALID_SOURCES {
