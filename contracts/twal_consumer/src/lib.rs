@@ -24,7 +24,8 @@ pub enum DataKey {
     /// Address authorized to write snapshots (a keeper bot or governance).
     Keeper,
     LiquiditySnapshot(Address, u64),
-    TrackedPools,
+    /// Persistent registry of tracked pools to avoid instance storage limits.
+    TrackedPoolsPersistent,
 }
 
 #[contracttype]
@@ -85,24 +86,34 @@ impl TwalConsumer {
             Self::SNAPSHOT_TTL_LEDGERS,
         );
 
+        Self::register_tracked_pool(&env, &pool);
+    }
+
+    /// Register a pool in the persistent tracked-pools list, deduplicating entries.
+    fn register_tracked_pool(env: &Env, pool: &Address) {
         let mut tracked: Vec<Address> = env
             .storage()
-            .instance()
-            .get(&DataKey::TrackedPools)
-            .unwrap_or_else(|| Vec::new(&env));
+            .persistent()
+            .get(&DataKey::TrackedPoolsPersistent)
+            .unwrap_or_else(|| Vec::new(env));
         let mut already = false;
         for i in 0..tracked.len() {
-            if tracked.get(i).unwrap() == pool {
+            if tracked.get(i).unwrap() == *pool {
                 already = true;
                 break;
             }
         }
         if !already {
-            tracked.push_back(pool);
-            env.storage()
-                .instance()
-                .set(&DataKey::TrackedPools, &tracked);
+            tracked.push_back(pool.clone());
         }
+        env.storage()
+            .persistent()
+            .set(&DataKey::TrackedPoolsPersistent, &tracked);
+        env.storage().persistent().extend_ttl(
+            &DataKey::TrackedPoolsPersistent,
+            Self::SNAPSHOT_TTL_LEDGERS / 2,
+            Self::SNAPSHOT_TTL_LEDGERS,
+        );
     }
 
     /// Average pool liquidity (sqrt(reserve_a * reserve_b)) over `window_seconds`.
@@ -144,8 +155,8 @@ impl TwalConsumer {
 
     pub fn get_tracked_pools(env: Env) -> Vec<Address> {
         env.storage()
-            .instance()
-            .get(&DataKey::TrackedPools)
+            .persistent()
+            .get(&DataKey::TrackedPoolsPersistent)
             .unwrap_or_else(|| Vec::new(&env))
     }
 
@@ -167,24 +178,7 @@ impl TwalConsumer {
             Self::SNAPSHOT_TTL_LEDGERS,
         );
 
-        let mut tracked: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::TrackedPools)
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut already = false;
-        for i in 0..tracked.len() {
-            if tracked.get(i).unwrap() == pool {
-                already = true;
-                break;
-            }
-        }
-        if !already {
-            tracked.push_back(pool);
-            env.storage()
-                .instance()
-                .set(&DataKey::TrackedPools, &tracked);
-        }
+        Self::register_tracked_pool(&env, &pool);
     }
 }
 

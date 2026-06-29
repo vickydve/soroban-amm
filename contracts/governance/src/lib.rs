@@ -68,6 +68,7 @@ pub enum GovernanceError {
     NotVetoMultisig = 30,
     InsufficientSnapshotBal = 31,
     VetoMultisigNotSet = 32,
+    NoPendingAdmin = 33,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -82,6 +83,8 @@ pub enum DataKey {
     ProposalCount,
     /// Governance admin.
     Admin,
+    /// Pending admin nomination for two-step handover.
+    PendingAdmin,
     /// Minimum proposer stake in basis points of total LP supply.
     MinProposerStakeBps,
     /// Voting period in seconds (configurable at initialize).
@@ -424,6 +427,59 @@ impl Governance {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         env.storage().instance().set(&DataKey::Timelock, &new_delay);
+        Ok(())
+    }
+
+    /// Admin-only: nominate a new governance admin.
+    ///
+    /// The nominee must call `accept_admin` to complete the two-step handover,
+    /// preventing a single compromised transaction from taking over the contract.
+    pub fn propose_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), GovernanceError> {
+        let stored: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if current_admin != stored {
+            return Err(GovernanceError::Unauthorized);
+        }
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &Some(new_admin.clone()));
+        soroban_amm_sdk::emit_versioned_event!(
+            env,
+            (Symbol::new(&env, "admin_nominated"),),
+            (current_admin, new_admin)
+        );
+        Ok(())
+    }
+
+    /// Accept a pending governance admin nomination.
+    ///
+    /// Only the nominated address can call this, and it must authorize the
+    /// transaction. On success the stored admin is updated and the pending
+    /// nomination is cleared.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), GovernanceError> {
+        let pending: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or(None);
+        let nominee = pending.ok_or(GovernanceError::NoPendingAdmin)?;
+        if new_admin != nominee {
+            return Err(GovernanceError::Unauthorized);
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &Option::<Address>::None);
+        soroban_amm_sdk::emit_versioned_event!(
+            env,
+            (Symbol::new(&env, "admin_changed"),),
+            (new_admin,)
+        );
         Ok(())
     }
 
@@ -1310,6 +1366,7 @@ mod tests {
         gov_addr: Address,
         lp_addr: Address,
         amm_addr: Address,
+        admin: Address,
     }
 
     fn setup_suite(initial_fee_bps: i128) -> Suite {
@@ -1366,6 +1423,7 @@ mod tests {
             gov_addr,
             lp_addr,
             amm_addr,
+            admin,
         }
     }
 
@@ -2820,5 +2878,46 @@ mod prop_tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    // ── Admin rotation (#379) ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_propose_admin_requires_current_admin() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+        let rando = Address::generate(&s.env);
+        let nominee = Address::generate(&s.env);
+        assert!(gov.try_propose_admin(&rando, &nominee).is_err());
+    }
+
+    #[test]
+    fn test_accept_admin_requires_pending_nomination() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+        let nominee = Address::generate(&s.env);
+        assert!(gov.try_accept_admin(&nominee).is_err());
+    }
+
+    #[test]
+    fn test_admin_rotation_two_step_handover() {
+        let s = setup_suite(30);
+        let gov = GovernanceClient::new(&s.env, &s.gov_addr);
+        let new_admin = Address::generate(&s.env);
+
+        // Current admin nominates the new admin.
+        gov.propose_admin(&s.admin, &new_admin);
+
+        // A non-nominee cannot accept.
+        let rando = Address::generate(&s.env);
+        assert!(gov.try_accept_admin(&rando).is_err());
+
+        // The nominee accepts and becomes admin.
+        gov.accept_admin(&new_admin);
+
+        // Old admin can no longer nominate; new admin can.
+        let another = Address::generate(&s.env);
+        assert!(gov.try_propose_admin(&s.admin, &another).is_err());
+        gov.propose_admin(&new_admin, &another);
     }
 }
