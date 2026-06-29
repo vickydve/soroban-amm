@@ -8,6 +8,7 @@ members = [
   "contracts/token",
   "contracts/factory",
   "contracts/twap_consumer",
+  "contracts/twal_consumer",
   "contracts/governance",
   "contracts/staking",
 ]
