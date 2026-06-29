@@ -22,6 +22,11 @@ pub enum VestingError {
     NotBeneficiary       = 7,
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const MIN_TTL: u32 = 241_920;    // ~14 days (at 5s per ledger)
+const BUMP_TO: u32 = 3_110_400;  // ~180 days (at 5s per ledger)
+
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -114,9 +119,9 @@ impl PolVestingContract {
             end_ledger,
             beneficiary: beneficiary.clone(),
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Vesting(beneficiary.clone()), &schedule);
+        let key = DataKey::Vesting(beneficiary.clone());
+        env.storage().persistent().set(&key, &schedule);
+        env.storage().persistent().extend_ttl(&key, MIN_TTL, BUMP_TO);
 
         env.events().publish(
             (Symbol::new(&env, "vesting_created"),),
@@ -135,6 +140,8 @@ impl PolVestingContract {
             .persistent()
             .get(&key)
             .ok_or(VestingError::VestingNotFound)?;
+
+        env.storage().persistent().extend_ttl(&key, MIN_TTL, BUMP_TO);
 
         if schedule.beneficiary != beneficiary {
             return Err(VestingError::NotBeneficiary);
@@ -186,6 +193,8 @@ impl PolVestingContract {
             .persistent()
             .get(&key)
             .ok_or(VestingError::VestingNotFound)?;
+
+        env.storage().persistent().extend_ttl(&key, MIN_TTL, BUMP_TO);
 
         let current_ledger = env.ledger().sequence();
         let vested = Self::vested_amount(&schedule, current_ledger);
