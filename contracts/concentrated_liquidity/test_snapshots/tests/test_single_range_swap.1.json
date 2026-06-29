@@ -680,12 +680,24 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "Admin"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "CurrentTick"
                             }
                           ]
                         },
                         "val": {
-                          "i32": -300
+                          "i32": -101
                         }
                       },
                       {
@@ -731,6 +743,70 @@
                             "hi": 0,
                             "lo": 0
                           }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "LastOracleTimestamp"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "MaxOracleDeviationBps"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 500
+                          }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "OracleAggregator"
+                            }
+                          ]
+                        },
+                        "val": "void"
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "OraclePoint"
+                            },
+                            {
+                              "u64": 0
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Paused"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
                         }
                       },
                       {
@@ -829,14 +905,40 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "PositionList"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "vec": [
+                                {
+                                  "i32": -100
+                                },
+                                {
+                                  "i32": 100
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "SqrtPriceX96"
                             }
                           ]
                         },
                         "val": {
                           "u128": {
-                            "hi": 4230542786,
-                            "lo": 10330176681277348904
+                            "hi": 4273492459,
+                            "lo": 9592306918328966840
                           }
                         }
                       },
@@ -873,6 +975,14 @@
                                   "hi": 0,
                                   "lo": 0
                                 }
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "initialized"
+                              },
+                              "val": {
+                                "bool": true
                               }
                             },
                             {
@@ -937,6 +1047,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "initialized"
+                              },
+                              "val": {
+                                "bool": true
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "liquidity_gross"
                               },
                               "val": {
@@ -994,6 +1112,30 @@
                             "hi": 68719476736,
                             "lo": 0
                           }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TickCumulative"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TickSpacing"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i32": 1
                         }
                       },
                       {
@@ -1831,6 +1973,9 @@
             "data": {
               "vec": [
                 {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                },
+                {
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                 },
                 {
@@ -1844,6 +1989,9 @@
                 },
                 {
                   "i32": 0
+                },
+                {
+                  "i32": 1
                 }
               ]
             }
@@ -2491,28 +2639,35 @@
             "data": {
               "vec": [
                 {
-                  "i32": -100
+                  "u32": 1
                 },
                 {
-                  "i32": 100
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 49751
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 50248
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 49751
-                  }
+                  "vec": [
+                    {
+                      "i32": -100
+                    },
+                    {
+                      "i32": 100
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 49751
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 50248
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 49751
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -2813,28 +2968,90 @@
             "data": {
               "vec": [
                 {
-                  "bool": true
+                  "u32": 1
                 },
                 {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 1000
-                  }
+                  "vec": [
+                    {
+                      "bool": true
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 1000
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 298
+                      }
+                    },
+                    {
+                      "u128": {
+                        "hi": 4273492459,
+                        "lo": 9592306918328966840
+                      }
+                    },
+                    {
+                      "i32": -101
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "price_upd"
+              },
+              {
+                "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+              },
+              {
+                "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "u32": 1
                 },
                 {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 298
-                  }
-                },
-                {
-                  "u128": {
-                    "hi": 4230542786,
-                    "lo": 10330176681277348904
-                  }
-                },
-                {
-                  "i32": -300
+                  "vec": [
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 1000
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 298
+                      }
+                    },
+                    {
+                      "u128": {
+                        "hi": 4273492459,
+                        "lo": 9592306918328966840
+                      }
+                    },
+                    {
+                      "i32": -101
+                    }
+                  ]
                 }
               ]
             }
@@ -2926,7 +3143,7 @@
                     "symbol": "current_tick"
                   },
                   "val": {
-                    "i32": -300
+                    "i32": -101
                   }
                 },
                 {
@@ -2935,9 +3152,17 @@
                   },
                   "val": {
                     "u128": {
-                      "hi": 4230542786,
-                      "lo": 10330176681277348904
+                      "hi": 4273492459,
+                      "lo": 9592306918328966840
                     }
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "tick_spacing"
+                  },
+                  "val": {
+                    "i32": 1
                   }
                 }
               ]

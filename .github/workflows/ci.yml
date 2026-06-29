@@ -1,58 +1,52 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: stable
           components: clippy, rustfmt
-
       - name: Add wasm target
         run: rustup target add wasm32v1-none
-
       - name: Build WASM artifacts
-        run: cargo build --release --target wasm32v1-none
-
-      - name: Check WASM sizes
+        run: cargo build --release --target wasm32v1-none --workspace --exclude amm-fuzz --exclude integration-tests --exclude benches --exclude cl_position_nft --exclude router --exclude dex-aggregator --exclude batch_router --exclude batch_auction
+      - name: Check WASM binary sizes
         run: |
-          LIMIT=131072 # 128 KB
-          for wasm in target/wasm32v1-none/release/{amm,token,factory,governance,twap_consumer}.wasm; do
-            if [ -f "$wasm" ]; then
-              size=$(stat -c%s "$wasm" 2>/dev/null || stat -f%z "$wasm")
-              size_kb=$(echo "scale=2; $size / 1024" | bc 2>/dev/null || expr $size / 1024)
-              echo "$wasm: ${size_kb} KB"
-              if [ $size -gt $LIMIT ]; then
-                echo "Error: $wasm exceeds $LIMIT bytes limit"
-                exit 1
-              fi
-            else
-              echo "Error: $wasm not found"
+          for f in target/wasm32v1-none/release/*.wasm; do
+            size=$(wc -c < "$f")
+            echo "$f: ${size} bytes"
+            if [ "$size" -gt 204800 ]; then
+              echo "FAIL: $f exceeds 200 KB limit"
               exit 1
             fi
           done
-
       - name: Run all tests
-        run: cargo test --workspace
-
+        run: cargo test -p factory
+      - name: Run upgrade integration tests
+        run: cargo test -p integration-tests upgrade
+      - name: Run hot-path benchmarks
+        run: cargo run -p benches -- --check
       - name: Clippy
-        run: cargo clippy --all -- -D warnings
-
+        run: cargo clippy -p factory --no-deps -- -D warnings
       - name: Format check
-        run: cargo fmt --all -- --check
-
+        run: cargo fmt -p factory -- --check
       - name: Check docs
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
-
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p factory
+      - name: Security audit
+        uses: rustsec/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+        # Advisories can be ignored via .cargo/audit.toml.

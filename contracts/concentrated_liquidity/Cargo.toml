@@ -8,9 +8,14 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+library = []
 
 [dependencies]
 soroban-sdk = { workspace = true }
+soroban-amm-sdk = { path = "../amm-sdk" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+token = { path = "../token", features = ["testutils"] }
+amm   = { path = "../amm",   features = ["testutils"] }
+cl_position_nft = { path = "../cl_position_nft" }

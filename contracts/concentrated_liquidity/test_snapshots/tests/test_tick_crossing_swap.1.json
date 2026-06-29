@@ -283,7 +283,8 @@
           ]
         }
       ]
-    ]
+    ],
+    []
   ],
   "ledger": {
     "protocol_version": 21,
@@ -649,8 +650,20 @@
                         "val": {
                           "i128": {
                             "hi": 0,
-                            "lo": 0
+                            "lo": 40080160
                           }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Admin"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                         }
                       },
                       {
@@ -662,7 +675,7 @@
                           ]
                         },
                         "val": {
-                          "i32": 0
+                          "i32": -40
                         }
                       },
                       {
@@ -714,6 +727,70 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "LastOracleTimestamp"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "MaxOracleDeviationBps"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 500
+                          }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "OracleAggregator"
+                            }
+                          ]
+                        },
+                        "val": "void"
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "OraclePoint"
+                            },
+                            {
+                              "u64": 0
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Paused"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "Position"
                             },
                             {
@@ -758,7 +835,7 @@
                               "val": {
                                 "i128": {
                                   "hi": 0,
-                                  "lo": 100000
+                                  "lo": 40080160
                                 }
                               }
                             },
@@ -806,14 +883,40 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "PositionList"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "vec": [
+                                {
+                                  "i32": -50
+                                },
+                                {
+                                  "i32": 0
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "SqrtPriceX96"
                             }
                           ]
                         },
                         "val": {
                           "u128": {
-                            "hi": 4294967296,
-                            "lo": 0
+                            "hi": 4290672328,
+                            "lo": 12986507827891524337
                           }
                         }
                       },
@@ -854,12 +957,20 @@
                             },
                             {
                               "key": {
+                                "symbol": "initialized"
+                              },
+                              "val": {
+                                "bool": true
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "liquidity_gross"
                               },
                               "val": {
                                 "i128": {
                                   "hi": 0,
-                                  "lo": 100000
+                                  "lo": 40080160
                                 }
                               }
                             },
@@ -870,7 +981,7 @@
                               "val": {
                                 "i128": {
                                   "hi": 0,
-                                  "lo": 100000
+                                  "lo": 40080160
                                 }
                               }
                             }
@@ -914,12 +1025,20 @@
                             },
                             {
                               "key": {
+                                "symbol": "initialized"
+                              },
+                              "val": {
+                                "bool": true
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "liquidity_gross"
                               },
                               "val": {
                                 "i128": {
                                   "hi": 0,
-                                  "lo": 100000
+                                  "lo": 40080160
                                 }
                               }
                             },
@@ -930,7 +1049,7 @@
                               "val": {
                                 "i128": {
                                   "hi": -1,
-                                  "lo": 18446744073709451616
+                                  "lo": 18446744073669471456
                                 }
                               }
                             }
@@ -971,6 +1090,30 @@
                             "hi": 0,
                             "lo": 1
                           }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TickCumulative"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TickSpacing"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i32": 1
                         }
                       },
                       {
@@ -1309,7 +1452,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 9900000
+                          "lo": 9940080
                         }
                       }
                     },
@@ -1382,7 +1525,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 10100000
+                          "lo": 10059920
                         }
                       }
                     },
@@ -1808,6 +1951,9 @@
             "data": {
               "vec": [
                 {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                },
+                {
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                 },
                 {
@@ -1821,6 +1967,9 @@
                 },
                 {
                   "i32": 10
+                },
+                {
+                  "i32": 1
                 }
               ]
             }
@@ -2376,28 +2525,35 @@
             "data": {
               "vec": [
                 {
-                  "i32": -50
+                  "u32": 1
                 },
                 {
-                  "i32": 0
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 100000
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 0
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 100000
-                  }
+                  "vec": [
+                    {
+                      "i32": -50
+                    },
+                    {
+                      "i32": 0
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 40080160
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 0
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 100000
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -2511,6 +2667,14 @@
                       "hi": 4294967296,
                       "lo": 0
                     }
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "tick_spacing"
+                  },
+                  "val": {
+                    "i32": 1
                   }
                 }
               ]
@@ -2670,6 +2834,98 @@
       "event": {
         "ext": "v0",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "8011bbf4cdf04e5bc6ac886935b99aa4b2c0cabde133f9d7fb3e656799f0a896"
+              },
+              {
+                "symbol": "transfer"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "i128": {
+                    "hi": 0,
+                    "lo": 40080
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "8011bbf4cdf04e5bc6ac886935b99aa4b2c0cabde133f9d7fb3e656799f0a896",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "transfer"
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              },
+              {
+                "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF"
+              }
+            ],
+            "data": {
+              "i128": {
+                "hi": 0,
+                "lo": 40080
+              }
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "8011bbf4cdf04e5bc6ac886935b99aa4b2c0cabde133f9d7fb3e656799f0a896",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "transfer"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
         "type_": "contract",
         "body": {
           "v0": {
@@ -2684,28 +2940,90 @@
             "data": {
               "vec": [
                 {
-                  "bool": true
+                  "u32": 1
                 },
                 {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 5000
-                  }
+                  "vec": [
+                    {
+                      "bool": true
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 5000
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 40080
+                      }
+                    },
+                    {
+                      "u128": {
+                        "hi": 4290672328,
+                        "lo": 12986507827891524337
+                      }
+                    },
+                    {
+                      "i32": -40
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "price_upd"
+              },
+              {
+                "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+              },
+              {
+                "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "u32": 1
                 },
                 {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 0
-                  }
-                },
-                {
-                  "u128": {
-                    "hi": 4294967296,
-                    "lo": 0
-                  }
-                },
-                {
-                  "i32": 0
+                  "vec": [
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 5000
+                      }
+                    },
+                    {
+                      "i128": {
+                        "hi": 0,
+                        "lo": 40080
+                      }
+                    },
+                    {
+                      "u128": {
+                        "hi": 4290672328,
+                        "lo": 12986507827891524337
+                      }
+                    },
+                    {
+                      "i32": -40
+                    }
+                  ]
                 }
               ]
             }
@@ -2732,8 +3050,94 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 0
+                "lo": 40080
               }
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000005"
+              },
+              {
+                "symbol": "get_pool_state"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "get_pool_state"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "active_liquidity"
+                  },
+                  "val": {
+                    "i128": {
+                      "hi": 0,
+                      "lo": 40080160
+                    }
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "current_tick"
+                  },
+                  "val": {
+                    "i32": -40
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "sqrt_price"
+                  },
+                  "val": {
+                    "u128": {
+                      "hi": 4290672328,
+                      "lo": 12986507827891524337
+                    }
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "tick_spacing"
+                  },
+                  "val": {
+                    "i32": 1
+                  }
+                }
+              ]
             }
           }
         }
