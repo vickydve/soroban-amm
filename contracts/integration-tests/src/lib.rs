@@ -9,6 +9,9 @@
 #[cfg(test)]
 mod upgrade_integration_test;
 
+#[cfg(test)]
+mod multisig_emergency_withdraw_test;
+
 #[cfg(all(test, feature = "legacy-integration-matrix"))]
 mod tests {
     use soroban_sdk::{
